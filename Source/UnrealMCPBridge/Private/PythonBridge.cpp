@@ -1,7 +1,8 @@
 // Copyright Omar Abdelwahed 2025. All Rights Reserved.
 
 #include "PythonBridge.h"
-#include <PythonScriptPlugin/Private/PythonScriptPlugin.h>
+// #include <PythonScriptPlugin/Private/PythonScriptPlugin.h>
+#include "IPythonScriptPlugin.h"
 #include "JsonGlobals.h"
 #include "JsonObjectConverter.h"
 #include <FileHelpers.h>
@@ -43,7 +44,8 @@ void FPythonBridge::Initialize()
     PythonCommand.ExecutionMode = EPythonCommandExecutionMode::ExecuteFile;
 
     //bool Result = FPythonScriptPlugin::Get()->ExecPythonCommand(*InitScript);
-    bool Result = FPythonScriptPlugin::Get()->ExecPythonCommandEx(PythonCommand);
+    //bool Result = FPythonScriptPlugin::Get()->ExecPythonCommandEx(PythonCommand);
+    bool Result = IPythonScriptPlugin::Get()->ExecPythonCommandEx(PythonCommand);
 	if (!Result)
 	{
 		UE_LOG(LogTemp, Error, TEXT("Failed to execute Python script"));
@@ -56,7 +58,8 @@ void FPythonBridge::Shutdown()
 {
     // Clean up any Python resources
     FString ShutdownScript = TEXT("del mcp_bridge");
-    FPythonScriptPlugin::Get()->ExecPythonCommand(*ShutdownScript);
+    //FPythonScriptPlugin::Get()->ExecPythonCommand(*ShutdownScript);
+    IPythonScriptPlugin::Get()->ExecPythonCommand(*ShutdownScript);
     UE_LOG(LogTemp, Display, TEXT("Python bridge shut down"));
 }
 
@@ -82,7 +85,8 @@ FString FPythonBridge::ExecutePythonScript(const FString& PythonScript)
     // Execute Python on main thread
     FGraphEventRef Task = FFunctionGraphTask::CreateAndDispatchWhenReady([&]()
     {
-            if (FPythonScriptPlugin::Get()->ExecPythonCommandEx(PythonCommand))
+            //if (FPythonScriptPlugin::Get()->ExecPythonCommandEx(PythonCommand))
+            if (IPythonScriptPlugin::Get()->ExecPythonCommandEx(PythonCommand))
             {
 				for (auto& Str : PythonCommand.LogOutput)
                 {
