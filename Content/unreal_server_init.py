@@ -286,7 +286,8 @@ class MCPUnrealBridge:
             for asset in assets:
                 this_name = str(asset.asset_name).lower()
                 if asset_name_lower in this_name:
-                    tile_asset_paths.append(str(asset.package_name))
+                    asset_data = { "asset_class": str(asset.asset_class_path.asset_name), "asset_path": str(asset.package_name)}
+                    tile_asset_paths.append(asset_data)
 
             if not tile_asset_paths:
                 return json.dumps({ "status": "error", "message": f"Could not find {asset_name} asset." })
@@ -328,7 +329,7 @@ class MCPUnrealBridge:
                     #print(f"Dimensions (width × depth × height): {width} × {depth} × {height}")
                     #print(f"Volume: {bounds.box_extent.x * 2 * bounds.box_extent.y * 2 * bounds.box_extent.z * 2}")
 
-                    result = {"width": width, "depth": depth, "height": height}
+                    result = {"width": width, "depth": depth, "height": height, "origin_x": bounds.origin.x, "origin_y": bounds.origin.y, "origin_z": bounds.origin.z}
 
                     return json.dumps({
                         "status": "success",
