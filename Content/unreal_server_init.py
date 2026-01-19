@@ -2,6 +2,24 @@ import unreal
 import json
 import sys
 import traceback
+import io
+import base64
+
+
+def decode_b64_param(value):
+    """Decode a Base64-encoded string parameter (prefixed with 'b64:')"""
+    if isinstance(value, str) and value.startswith('b64:'):
+        try:
+            decoded = base64.b64decode(value[4:]).decode('utf-8')
+            # Strip extra quotes if present (from JSON serialization layers)
+            if decoded.startswith('""') and decoded.endswith('""'):
+                decoded = decoded[2:-2]
+            elif decoded.startswith('"') and decoded.endswith('"'):
+                decoded = decoded[1:-1]
+            return decoded
+        except Exception:
+            return value  # Return original if decode fails
+    return value
 
 class MCPUnrealBridge:
 
@@ -1225,30 +1243,25 @@ class MCPUnrealBridge:
             return json.dumps({ "status": "error", "message": str(e) })
 
     @staticmethod
+    def reset_context():
+        """Reset the persistent Python execution context.
+        Call this to clear all variables/classes defined in previous execute_python() calls."""
+        if hasattr(MCPUnrealBridge, '_context'):
+            del MCPUnrealBridge._context
+        return json.dumps({"status": "success", "result": "Context reset"})
+
+    @staticmethod
     def execute_python(code):
-        """Execute arbitrary Python code in Unreal Engine"""
+        """Execute arbitrary Python code in Unreal Engine.
+        Variables and classes defined persist across calls until reset_context() is called."""
 
         try:
-
-            # decode and extract dict object
-            #decoded = chunk.decode('utf-8', 'replace')
-            #stripped = decoded.strip('\'"\n\r')
-            replaced = code.replace('\\\\','\\').replace('\\"','"').replace("\\'","'").replace('f"\n', 'f"').replace('f\'\n', 'f\'').replace('\n"', '"').replace('\n\'', '\'')
-            #response = json.loads(replaced)
-
-            # save to file first
-            #code_file = open('code.py', 'w')
-            #code_file.write(code)
-            #code_file.close()
-
-            # read back
-            #code_file = open('code.py', 'r')
-            #code_text = code_file.read()
-            #code_file.close()
+            # Decode Base64-encoded code parameter (C++ encodes with "b64:" prefix)
+            decoded_code = decode_b64_param(code)
 
             # check for syntax errors
             try:
-                code_obj = compile(replaced, '<string>', 'exec')
+                code_obj = compile(decoded_code, '<string>', 'exec')
                 
             except SyntaxError as se:
                 return json.dumps({
@@ -1263,25 +1276,29 @@ class MCPUnrealBridge:
                     "traceback" : traceback.format_exc()
                 })
 
+            # Use StringIO for in-memory output capture (no file buffering issues)
+            output_buffer = io.StringIO()
+            error_buffer = io.StringIO()
+            original_stdout = sys.stdout
+            original_stderr = sys.stderr
+
             try:
+                # Redirect stdout and stderr to StringIO buffers
+                sys.stdout = output_buffer
+                sys.stderr = error_buffer
 
-                # Create output capture file
-                output_file = open('output.txt', 'w')
-                error_file = open('error.txt', 'w')
+                # Use persistent context that survives across calls
+                # This allows classes/variables defined in one call to be used in subsequent calls
+                if not hasattr(MCPUnrealBridge, '_context'):
+                    MCPUnrealBridge._context = {
+                        'unreal': unreal,
+                        '__builtins__': __builtins__,
+                        'MCPUnrealBridge': MCPUnrealBridge,  # Access to bridge class
+                    }
+                MCPUnrealBridge._context['result'] = None  # Reset result each call
 
-                # Store original stdout and stderr
-                original_stdout = sys.stdout
-                original_stderr = sys.stderr
-
-                # Redirect stdout and stderr
-                sys.stdout = output_file
-                sys.stderr = error_file
-
-                # Create a local dictionary for execution
-                locals_dict = { 'unreal': unreal, 'result': None }
-
-                # Execute the compiled code
-                exec(code_obj, globals(), locals_dict)
+                # Execute with persistent context (same dict for globals and locals)
+                exec(code_obj, MCPUnrealBridge._context, MCPUnrealBridge._context)
 
             except AttributeError as ae:
                 return json.dumps({
@@ -1298,30 +1315,19 @@ class MCPUnrealBridge:
                 })
 
             finally:
-                
-                # close output
-                output_file.close()
-                error_file.close()
-
                 # Restore original stdout and stderr
                 sys.stdout = original_stdout
                 sys.stderr = original_stderr
 
-            # read output
-            read_output = open('output.txt', 'r')
-            result = read_output.read()
-            read_output.close()
+            # Get captured output directly from buffers (no file I/O lag)
+            result = output_buffer.getvalue()
+            error_text = error_buffer.getvalue()
 
-            # read errors
-            read_error = open('error.txt', 'r')
-            error_text = read_error.read()
-            read_error.close()
-
-            # Return the result if it was set
-            if 'result' in locals_dict and locals_dict['result'] is not None:
+            # Return the result if it was set (check _context exists in case reset_context was called)
+            if hasattr(MCPUnrealBridge, '_context') and MCPUnrealBridge._context.get('result') is not None:
                 return json.dumps({
                     "status": "success",
-                    "result" : str(locals_dict['result'])
+                    "result" : str(MCPUnrealBridge._context['result'])
                 })
             elif error_text and len(error_text) > 0:
                 return json.dumps({
@@ -1340,16 +1346,10 @@ class MCPUnrealBridge:
                 })
 
         except Exception as exc:
-
-            # read error
-            error_msg = str(exc)
-            read_error = open('error.txt', 'r')
-            if read_error:
-                error_msg = read_error.read()
-                read_error.close()
+            # Catch-all for unexpected errors
             return json.dumps({
                 "status": "error",
-                "message" : f"Python exec() error: {error_msg}",
+                "message" : f"Python exec() error: {str(exc)}",
                 "traceback" : traceback.format_exc()
             })
 

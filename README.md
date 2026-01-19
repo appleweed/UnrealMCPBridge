@@ -30,7 +30,7 @@ The easiest way to install the MCP Python Bridge plugin is from the [Fab store l
 6. Copy `unreal_mcp_client.py` from the 'MCPClient' folder to a location of your choice.
 7. Find your `claude_desktop_config.json` configuration file.
 Mac location: `~/Library/Application\ Support/Claude/claude_desktop_config.json`
-Windows location: `[path_to_your_user_account]\AppData\Claude\claude_desktop_config.json`
+Windows location: `[path_to_your_user_account]\AppData\Roaming\Claude\claude_desktop_config.json`
 8. Add the `unreal-engine` server section to your config file and update the path location excluding the square brackets, below.
 Mac path format: `/[path_from_step_4]/unreal_mcp_client.py`
 Windows path format: `C:\\[path_from_step_4]\\unreal_mcp_client.py`

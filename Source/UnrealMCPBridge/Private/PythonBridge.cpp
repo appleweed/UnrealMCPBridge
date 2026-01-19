@@ -9,6 +9,7 @@
 #include "Interfaces/IPluginManager.h"
 #include "Async/TaskGraphInterfaces.h"
 #include "Microsoft/MinimalWindowsApi.h"
+#include "Misc/Base64.h"
 
 FString FPythonBridge::LoadFileToString(FString AbsolutePath)
 {
@@ -100,8 +101,29 @@ FString FPythonBridge::ExecutePythonScript(const FString& PythonScript)
             }
             else
             {
-                UE_LOG(LogTemp, Error, TEXT("[PYTHON FAILED]"));
-                Result = TEXT("{\"status\":\"error\",\"message\":\"Failed to execute Python script \"}");
+                // Collect error output from LogOutput even on failure
+                FString ErrorOutput;
+                for (auto& Str : PythonCommand.LogOutput)
+                {
+                    ErrorOutput += Str.Output;
+                }
+                UE_LOG(LogTemp, Error, TEXT("[PYTHON FAILED] %s"), *ErrorOutput);
+
+                // Escape quotes and backslashes for JSON
+                ErrorOutput = ErrorOutput.Replace(TEXT("\\"), TEXT("\\\\"));
+                ErrorOutput = ErrorOutput.Replace(TEXT("\""), TEXT("\\\""));
+                ErrorOutput = ErrorOutput.Replace(TEXT("\n"), TEXT("\\n"));
+                ErrorOutput = ErrorOutput.Replace(TEXT("\r"), TEXT("\\r"));
+                ErrorOutput = ErrorOutput.Replace(TEXT("\t"), TEXT("\\t"));
+
+                if (ErrorOutput.IsEmpty())
+                {
+                    Result = TEXT("{\"status\":\"error\",\"message\":\"Failed to execute Python script\"}");
+                }
+                else
+                {
+                    Result = FString::Printf(TEXT("{\"status\":\"error\",\"message\":\"Python execution failed\",\"details\":\"%s\"}"), *ErrorOutput);
+                }
             }
 
     }, TStatId(), NULL, ENamedThreads::GameThread);
@@ -129,7 +151,22 @@ FString FPythonBridge::ParamsToPythonDict(TSharedPtr<FJsonObject> Params)
 
         if (Pair.Value->Type == EJson::String)
         {
-            ValueStr = FString::Printf(TEXT("\"%s\""), *Pair.Value->AsString());
+            FString Original = Pair.Value->AsString();
+
+            // Base64 encode the "code" parameter to avoid escape sequence issues
+            // Python side will detect "b64:" prefix and decode
+            if (Pair.Key == TEXT("code"))
+            {
+                FString Encoded = FBase64::Encode(Original);
+                ValueStr = FString::Printf(TEXT("\"b64:%s\""), *Encoded);
+            }
+            else
+            {
+                // For other string params, escape quotes and backslashes for Python string literal
+                FString Escaped = Original.Replace(TEXT("\\"), TEXT("\\\\"));
+                Escaped = Escaped.Replace(TEXT("\""), TEXT("\\\""));
+                ValueStr = FString::Printf(TEXT("\"%s\""), *Escaped);
+            }
         }
         else if (Pair.Value->Type == EJson::Number)
         {
