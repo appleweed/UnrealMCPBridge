@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/appleweed-unrealmcpbridge-badge.png)](https://mseep.ai/app/appleweed-unrealmcpbridge)
+
 # Unreal Engine MCP Python Bridge Plugin
 
 This is a plugin for Unreal Engine (UE) that creates a server implementation of [Model Context Protocol (MCP)](https://modelcontextprotocol.io/introduction).
