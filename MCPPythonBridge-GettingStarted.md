@@ -183,17 +183,18 @@ These tools introspect a Blueprint's graphs without `execute_python`. Together t
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `get_node_ids` | `blueprint_path` | Returns the node IDs in the BP's event graph (JSON list). |
+| `get_graph_names` | `blueprint_path` | Lists **every** graph as `"Name\|Type"` where Type ∈ {Ubergraph, Function, Macro}. **Call this before any graph-wide search** — see the warning below. |
+| `get_node_ids` | `blueprint_path`, `graph_name` | Returns node IDs in a graph (JSON list). `graph_name` empty = **event graph only**. |
 | `get_node_ids_in_graph` | `blueprint_path`, `graph_name` | Returns node IDs in a named graph (event graph, user function, or macro). |
-| `get_pin_names` | `blueprint_path`, `node_id` | Returns the internal pin names on a node ("execute", "then", "ReturnValue", etc.). |
-| `get_pin_details` | `blueprint_path`, `node_id` | Returns pin info as `"PinName\|Direction\|Type"` strings (Input/Output, exec/bool/int/struct/object/...). |
-| `get_node_title` | `blueprint_path`, `node_id` | Returns the human-readable list-view title (e.g., "Print String", "Branch", "Get MyVar"). |
+| `get_pin_names` | `blueprint_path`, `node_id`, `graph_name` | Returns the internal pin names on a node ("execute", "then", "ReturnValue", etc.). `graph_name` scopes the lookup — pass the function graph name to read pins on `FunctionEntry`/`FunctionResult` and other function-body nodes (empty = search all graphs). |
+| `get_pin_details` | `blueprint_path`, `node_id`, `graph_name` | Returns pin info as `"PinName\|Direction\|Type"` strings (Input/Output, exec/bool/int/struct/object/...). `graph_name` scopes the lookup like `get_pin_names`. |
+| `get_node_title` | `blueprint_path`, `node_id`, `graph_name` | Returns the human-readable list-view title (e.g., "Print String", "Branch", "Get MyVar"). `graph_name` scopes the lookup. |
 | `get_function_reference` | `blueprint_path`, `node_id` | For a `K2Node_CallFunction`, returns `"MemberParent::MemberName"` (e.g., `"KismetSystemLibrary::PrintString"`). Empty for non-call nodes. |
 | `get_event_reference` | `blueprint_path`, `node_id` | For `K2Node_Event` returns `"Class::Member"`; for `K2Node_CustomEvent` returns the custom event name. |
 | `get_variable_reference` | `blueprint_path`, `node_id` | For `K2Node_VariableGet` / `K2Node_VariableSet`, returns the variable name. |
 | `get_macro_reference` | `blueprint_path`, `node_id` | For `K2Node_MacroInstance`, returns `"Library::MacroName"`. |
-| `get_pin_connections` | `blueprint_path`, `node_id`, `pin_name` | Returns the linked-to pins as `"OtherNodeId.OtherPinName"` strings (JSON list). The key function for walking a graph: follow exec pins for control flow, follow data pins for value flow. Silent no-op if the pin doesn't exist on the node. |
-| `get_pin_default_value` | `blueprint_path`, `node_id`, `pin_name` | Returns the default literal of an unconnected input pin. For object/class pins returns the asset path; for value pins returns the literal string. |
+| `get_pin_connections` | `blueprint_path`, `node_id`, `pin_name`, `graph_name` | Returns the linked-to pins as `"OtherNodeId.OtherPinName"` strings (JSON list). The key function for walking a graph: follow exec pins for control flow, follow data pins for value flow. Silent no-op if the pin doesn't exist on the node. **Pass `graph_name` on any multi-graph BP** — node IDs collide across graphs. |
+| `get_pin_default_value` | `blueprint_path`, `node_id`, `pin_name`, `graph_name` | Returns the default literal of an unconnected input pin. For object/class pins returns the asset path; for value pins returns the literal string. **Pass `graph_name` on any multi-graph BP.** |
 | `get_function_graph_names` | `blueprint_path` | Lists user-defined function graphs on a BP. Pair with `get_node_ids_in_graph` to walk them. |
 | `get_macro_graph_names` | `blueprint_path` | Lists macro graphs on a BP. |
 | `get_member_variable_names` | `blueprint_path` | Lists member variables (`NewVariables` — distinct from components and from variable nodes that reference them). |
@@ -204,26 +205,51 @@ These tools introspect a Blueprint's graphs without `execute_python`. Together t
 | `get_component_template_names` | `blueprint_path` | Lists Simple Construction Script (SCS) component variable names. |
 | `get_component_template_class` | `blueprint_path`, `component_name` | Returns the class name of an SCS component (e.g., `"StaticMeshComponent"`). |
 
+**⚠ Two read hazards that produce confidently wrong answers.** Both are silent — you get a plausible result, not an error:
+
+1. **Node IDs collide across graphs.** Every function graph has its own `K2Node_FunctionEntry_0`, and `K2Node_CallFunction_3` can exist in several graphs at once. Tools with a `graph_name` parameter search *all* graphs when it's empty and return the first match — which may be a different graph's node. **Always pass `graph_name` on a Blueprint with more than one graph**, especially when verifying wiring.
+
+2. **A Blueprint can have more than one ubergraph page.** `get_node_ids` with no `graph_name` returns *only* the event graph, and `get_function_graph_names` lists *only* true functions — so an extra ubergraph page (a separate input-actions page, for example) is invisible to both. A search built on either will report "not found" for nodes that plainly exist in the editor. **Start with `get_graph_names`**, which enumerates every graph including those pages. When a graph search comes back empty, suspect this before believing the negative result.
+
 ### Blueprint Graph Authoring (Writes)
 
 These tools build BP graphs without `execute_python`. The typical authoring sequence is: create BP → add events/calls/variables → wire pins → set defaults → compile and save. Node IDs returned by `add_*_node` tools are stable until the next compile.
+
+**Authoring inside a function graph:** the node-creation and pin tools take an optional `graph_name`. Leave it empty to target the **event graph** (the default). Pass a function graph's name (from `get_function_graph_names`) to add nodes **into that function's body** and to wire its `FunctionEntry` / `FunctionResult` nodes. This is required for function graphs — creators add to the event graph otherwise, so body nodes and the entry/result would land in different graphs and fail to connect. On the pin/introspection tools, `graph_name` also scopes node-id lookup to that graph, avoiding collisions where the event graph and a function graph both contain e.g. `K2Node_VariableGet_1`.
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `create_new_blueprint` | `path`, `name`, `parent_class_path` | Creates a new BP asset. Returns its full asset path (e.g., `/Game/BP/BP_MyActor.BP_MyActor`). New BPs are created with default `BeginPlay` / `Tick` / `ActorBeginOverlap` events already present — find them via `get_node_ids` rather than adding duplicates. |
 | `add_event_node` | `blueprint_path`, `event_name`, `pos_x`, `pos_y` | Adds an event node (e.g., `"ReceiveDestroyed"`). Avoid duplicating BeginPlay/Tick — they already exist on new BPs. |
-| `add_call_function_node` | `blueprint_path`, `target_class_path`, `function_name`, `pos_x`, `pos_y` | Adds a function call. `target_class_path` examples: `/Script/Engine.KismetSystemLibrary`, `/Script/Engine.KismetMathLibrary`, or any BP class path. |
-| `add_spawn_actor_node` | `blueprint_path`, `actor_class_path`, `pos_x`, `pos_y` | Adds the canonical `UK2Node_SpawnActorFromClass`. The class is pinned and `ExposeOnSpawn` properties materialize as input pins automatically. Also auto-spawns a `Make Transform` helper node (KismetMathLibrary call) wired into `SpawnTransform`, because that pin is by-ref and the K2 compiler rejects an unconnected one. Edit the Make Transform's Location/Rotation/Scale sub-pins to set a non-identity spawn transform, or replace it with your own input. |
-| `add_variable_get_node` | `blueprint_path`, `variable_name`, `pos_x`, `pos_y` | Adds a variable Get node. Variable must already exist (via `add_variable`). Returns the post-insert node ID — safe to pass directly to `connect_pins`. |
-| `add_variable_set_node` | `blueprint_path`, `variable_name`, `pos_x`, `pos_y` | Adds a variable Set node. Variable must already exist. Returns the post-insert node ID. |
-| `add_branch_node` | `blueprint_path`, `pos_x`, `pos_y` | Adds an if/else `Branch` node. Returns the post-insert node ID. |
+| `add_call_function_node` | `blueprint_path`, `target_class_path`, `function_name`, `pos_x`, `pos_y`, `graph_name` | Adds a function call. `target_class_path` examples: `/Script/Engine.KismetSystemLibrary`, `/Script/Engine.KismetMathLibrary`, or any BP class path. `graph_name` empty = event graph. |
+| `add_cast_node` | `blueprint_path`, `target_class_path`, `pos_x`, `pos_y`, `graph_name` | Adds a dynamic `Cast To <Class>` node (impure — has exec + `CastFailed`). Pins: `Object` (input), `then`/`CastFailed` (exec out), `As<ClassName>` (output). Use to convert a generic `Object`/`Actor` pin to a specific class (e.g., blackboard `GetValueAsObject` → Actor). `graph_name` empty = event graph. |
+| `add_spawn_actor_node` | `blueprint_path`, `actor_class_path`, `pos_x`, `pos_y`, `graph_name` | Adds the canonical `UK2Node_SpawnActorFromClass`. The class is pinned and `ExposeOnSpawn` properties materialize as input pins automatically. Also auto-spawns a `Make Transform` helper node (KismetMathLibrary call) wired into `SpawnTransform`, because that pin is by-ref and the K2 compiler rejects an unconnected one. Edit the Make Transform's Location/Rotation/Scale sub-pins to set a non-identity spawn transform, or replace it with your own input. |
+| `add_variable_get_node` | `blueprint_path`, `variable_name`, `pos_x`, `pos_y`, `graph_name` | Adds a variable Get node. Variable must already exist (via `add_variable`). Returns the post-insert node ID — safe to pass directly to `connect_pins`. `graph_name` empty = event graph. |
+| `add_variable_set_node` | `blueprint_path`, `variable_name`, `pos_x`, `pos_y`, `graph_name` | Adds a variable Set node. Variable must already exist. Returns the post-insert node ID. `graph_name` empty = event graph. |
+| `add_branch_node` | `blueprint_path`, `pos_x`, `pos_y`, `graph_name` | Adds an if/else `Branch` node (exec-out pins `then`/`else`). Returns the post-insert node ID. `graph_name` empty = event graph. |
 | `add_custom_event_node` | `blueprint_path`, `event_name`, `pos_x`, `pos_y` | Adds a Custom Event entry point callable from BP code. |
-| `connect_pins` | `blueprint_path`, `source_node_id`, `source_pin`, `target_node_id`, `target_pin` | Wires two pins (exec or data). Use the internal pin names (`"then"`, `"execute"`, `"ReturnValue"`, etc.) — call `get_pin_names` first if unsure. |
-| `set_pin_default_value` | `blueprint_path`, `node_id`, `pin_name`, `value` | Sets a literal default on an unconnected input. For object/class pins pass an asset path (`"/Game/BP/BP_NPC.BP_NPC_C"`). |
+| `add_make_array_node` | `blueprint_path`, `num_inputs`, `pos_x`, `pos_y`, `graph_name`, `element_type` | Adds a `Make Array` node with `num_inputs` pins named `"[0]".."[N-1]"`, output `"Array"`. Pass `element_type` (`"name"`, `"int"`, a struct/class path, …) to type the pins immediately — **required if you intend to set element defaults**. Left empty, pins are wildcards and the first connection fixes the type, rejecting later mismatches (a useful check when wiring parallel arrays). |
+| `add_variable_get_node_for_class` | `blueprint_path`, `variable_name`, `owner_class_path`, `pos_x`, `pos_y`, `graph_name` | Adds a variable Get for a member of **another** class, producing a node with a target pin (unlike `add_variable_get_node`, which is self-scoped). Use to read a member off a component reference. Prefer an interface getter when one exists — it's the public API and survives refactors. |
+| `add_function_override` | `blueprint_path`, `function_name` | Overrides a parent function/event — the equivalent of My Blueprint → **Override**. Functions placeable as events get a `K2Node_Event` in the event graph (returns the node ID); everything else gets a new function graph with the parent's signature (returns the graph name, which you then pass as `graph_name`). Discover names with `get_overridable_functions`. |
+| `break_pin_links` | `blueprint_path`, `node_id`, `pin_name`, `graph_name`, `target_node_id`, `target_pin_name` | Breaks links on a pin — all of them, or just the one to a specific target pin. Required to **rewire**: `connect_pins` alone cannot splice a node out of an exec chain. |
+| `remove_node` | `blueprint_path`, `node_id`, `graph_name` | Removes a node, breaking its links first. Refuses nodes the user can't delete (function entry/result). Pass `graph_name` so you don't delete a same-named node in another graph. |
+| `reconstruct_node` | `blueprint_path`, `node_id`, `graph_name` | Rebuilds a node's pins. Needed after `set_pin_default_value` on a **class pin** of a `DeterminesOutputType` node (`GetComponentByClass`, etc.) — see the gotcha below. |
+| `connect_pins` | `blueprint_path`, `source_node_id`, `source_pin`, `target_node_id`, `target_pin`, `graph_name` | Wires two pins (exec or data). Use the internal pin names (`"then"`, `"execute"`, `"ReturnValue"`, etc.) — call `get_pin_names` first if unsure. Pass `graph_name` when wiring inside a function so node-ids resolve unambiguously (and so `FunctionEntry`/`FunctionResult` are reachable). |
+| `set_pin_default_value` | `blueprint_path`, `node_id`, `pin_name`, `value`, `graph_name` | Sets a literal default on an unconnected input. For object/class pins pass an asset path (`"/Game/BP/BP_NPC.BP_NPC_C"`). `graph_name` scopes the node lookup. |
 | `add_variable` | `blueprint_path`, `name`, `type_name`, `instance_editable` | Adds a member variable. Type names: `bool`, `int`, `float`, `string`, `name`, `text`, `Vector`, `Rotator`, `Transform`, or a class path. |
 | `add_function_graph` | `blueprint_path`, `graph_name` | Creates a new user-defined function graph on the BP (empty FunctionEntry, no parameters yet). |
 | `add_function_parameter` | `blueprint_path`, `function_graph_name`, `param_name`, `type_name`, `is_input`, `default_value` | Adds an input or output parameter to a function graph. If adding the first output, a `FunctionResult` node is auto-spawned. |
 | `compile_and_save_blueprint` | `blueprint_path` | Compiles the BP and writes to disk. Returns `"True"` on success without errors. Call once at the end of an authoring sequence. |
+
+**Class pins and `DeterminesOutputType`.** `set_pin_default_value` handles class/object pins correctly — it assigns the pin's `DefaultObject` (returning `False` if the asset can't be loaded), and `get_pin_default_value` returns that object's path. If a class pin appears to read back empty, suspect an **unscoped read hitting a different graph's node** before concluding the write failed — pass `graph_name`.
+
+On nodes whose **output type is driven by a class pin** (`GetComponentByClass`, Learning Agents' `GetAgent`, …), the return pin keeps its base type until the node is rebuilt, so connecting it to a typed pin **fails** immediately after setting the class pin. Call `reconstruct_node` — it preserves existing connections — or insert an `add_cast_node`, which also gives you a `CastFailed` path.
+
+**Wildcard pins can't hold defaults.** Resolving a wildcard pin's type reconstructs the node and discards pin defaults, so `set_pin_default_value` **refuses wildcard pins** and returns `False` with an explanatory log rather than reporting a write that won't survive. Type the pins up front instead — for `Make Array` that means passing `element_type`.
+
+**Pin names vary by overload.** Sibling functions often disagree: `MakeFloatObservation` takes `Value` while `MakeBoolObservation` takes `bValue`; `Branch`'s false pin is `else`, not `false`. Call `get_pin_details` before wiring rather than assuming.
+
+**Serialize writes.** Fire graph-edit commands one at a time. Parallel writes can wedge the bridge and require an editor restart. Reads parallelize safely.
 
 ### PIE Control
 
@@ -315,7 +341,7 @@ You can add your own prompts by following the pattern in the "Developing New Too
 
 ## C++ Libraries
 
-The plugin bundles five C++ `BlueprintFunctionLibrary` classes that auto-reflect to Python when the plugin is loaded. Most of `BlueprintGraphLibrary`, `TraceAnalysisLibrary`, and `PIEControlLibrary` is now exposed as dedicated MCP tools (see the tool tables above). The `execute_python` tool can also reach them directly via `import unreal`.
+The plugin bundles six C++ `BlueprintFunctionLibrary` classes that auto-reflect to Python when the plugin is loaded. Most of `BlueprintGraphLibrary`, `TraceAnalysisLibrary`, and `PIEControlLibrary` is now exposed as dedicated MCP tools (see the tool tables above). The `execute_python` tool can also reach them directly via `import unreal`.
 
 | Library | Python Access | Purpose |
 |---------|--------------|---------|
@@ -324,6 +350,7 @@ The plugin bundles five C++ `BlueprintFunctionLibrary` classes that auto-reflect
 | `ViewportCaptureLibrary` | `unreal.ViewportCaptureLibrary` | Synchronous viewport screenshot capture via ReadPixels. Used internally by `take_screenshot`. |
 | `TraceAnalysisLibrary` | `unreal.TraceAnalysisLibrary` | Parse Unreal Insights `.utrace` files — timing scopes, frame stats, thread info, **and Net channel events** (per-connection bytes/packets, top objects/event types by replication bandwidth) via `INetProfilerProvider`. Used internally by `analyze_trace`, `get_trace_spikes`, `get_trace_frame_summary`, `get_trace_net_summary`. |
 | `PIEControlLibrary` | `unreal.PIEControlLibrary` | Start, stop, and query Play-In-Editor sessions with optional multiplayer config. Wraps `ULevelEditorPlaySettings` + `LevelEditorSubsystem`. Exposed as `start_pie` / `stop_pie` / `is_pie_running` MCP tools. |
+| `UMGAuthoringLibrary` | `unreal.UMGAuthoringLibrary` | Author Widget Blueprints (UMG) from Python: construct widgets into the tree, set the root widget, toggle "Is Variable", and **headlessly** compile+save (`finalize_widget_blueprint`), instantiate a renderable widget (`create_widget_instance`), and delete assets (`delete_asset_headless`) with no modal dialogs. Fills the gaps `set_editor_property` can't reach (`UWidgetTree::RootWidget`, `UWidget::bIsVariable`) and provides a dialog-free batch-authoring path. Used via `execute_python` — see "Authoring Widget Blueprints (UMG)" below. |
 
 ## Developing New Tools and Prompts
 
@@ -447,6 +474,45 @@ Use execute_python with `import unreal` and `unreal.NiagaraEditorLibrary` to:
 **Example prompt for Claude Code** — type directly in the conversation:
 
 > Create a Niagara lightning effect with a beam emitter. It should be a jagged blue-white bolt that fires once from (0, 0, 2000) down to (0, 0, 0). Use a Ribbon renderer with JitterPosition for the jagged shape.
+
+### Authoring Widget Blueprints (UMG)
+
+Widget Blueprints (UMG) can be built end-to-end from Python via `execute_python`. Most of the pipeline is already covered by the stock UE Python API — create the WBP asset (`WidgetBlueprintFactory`), load its editor `WidgetTree` (`unreal.load_object(wbp, "WidgetTree")`), construct child widgets (`new_object`), parent them (`add_child_to_canvas` / `_horizontal_box` / `_vertical_box` / `_overlay`), and set brushes, fonts, and slot layout. Two `UPROPERTY`s are C++-`protected` with no Blueprint-exposed setter, so `set_editor_property` refuses them. `UMGAuthoringLibrary` supplies those:
+
+| Function (Python) | Purpose |
+|-------------------|---------|
+| `unreal.UMGAuthoringLibrary.create_widget_in_tree(wbp, WidgetClass, name, is_variable)` | Constructs a widget **into** the BP's `WidgetTree` via `ConstructWidget` (Outer == the tree, clean name) and sets `bIsVariable` in one call. Construction only — no compile. Returns the `UWidget`. |
+| `unreal.UMGAuthoringLibrary.set_widget_tree_root(wbp, root)` | Assigns `UWidgetTree::RootWidget` and marks the BP modified. Without a root the WBP renders nothing. (For the headless path, `finalize_widget_blueprint` does this for you.) Returns `bool`. |
+| `unreal.UMGAuthoringLibrary.set_widget_is_variable(widget, is_variable)` | Toggles the designer "Is Variable" checkbox (`UWidget::bIsVariable`) — flag only, no side effects. Needed for a sub-widget to compile into a member variable the WBP's setters can reference. Returns `bool`. |
+| `unreal.UMGAuthoringLibrary.finalize_widget_blueprint(wbp, root)` | **Headless churn-killer.** Reparents `root` into the tree, sets it as the root, then compiles and **saves** the package — all with modal dialogs suppressed. Use this instead of `compile_blueprint` + `save_asset` (those pop prompts that block the game thread and can crash the editor). Returns `bool`. |
+| `unreal.UMGAuthoringLibrary.create_widget_instance(world_context, gen_class, controller)` | Instantiates a `UUserWidget` the proper way (runs `Initialize`) so it renders and can be `add_to_viewport()`'d for screenshot verification. Needs a live world context (e.g. a PIE actor). |
+| `unreal.UMGAuthoringLibrary.delete_asset_headless(path)` | Deletes an asset with no "asset is referenced"/confirmation prompts. Accepts a package or object path. Already-absent counts as success. Returns `bool`. |
+
+> **Build widgets headlessly.** Modal dialogs from `compile_blueprint` / `save_asset` / `delete_asset` block the MCP bridge's game thread and can crash the editor during batch authoring. Use `finalize_widget_blueprint` and `delete_asset_headless` (both suppress dialogs) instead. Set `bIsVariable` once via `create_widget_in_tree`'s last argument — don't call a separate marking pass mid-build.
+
+**Example prompt for Claude Code** — type directly in the conversation:
+
+> Create a Widget Blueprint at /Game/UI/Widgets/WBP_Card with a SizeBox root containing a TextBlock that reads "IT WORKS", exposed as a member variable, then compile and save it headlessly.
+
+**Example (`execute_python`, fully headless — no dialogs):**
+
+```python
+import unreal
+at = unreal.AssetToolsHelpers.get_asset_tools()
+W  = "/Game/UI/Widgets/WBP_Card"
+
+unreal.UMGAuthoringLibrary.delete_asset_headless(W)                  # clean slate, no prompt
+wbp  = at.create_asset("WBP_Card", "/Game/UI/Widgets", None, unreal.WidgetBlueprintFactory())
+tree = unreal.load_object(wbp, "WidgetTree")
+
+root = unreal.UMGAuthoringLibrary.create_widget_in_tree(wbp, unreal.SizeBox,   "Root",  True)
+txt  = unreal.UMGAuthoringLibrary.create_widget_in_tree(wbp, unreal.TextBlock, "Label", True)
+root.add_child(txt); txt.set_text("IT WORKS")
+
+unreal.UMGAuthoringLibrary.finalize_widget_blueprint(wbp, root)      # headless compile + save
+```
+
+Opening `WBP_Card` shows a SizeBox root containing a `Label` TextBlock reading "IT WORKS", with `Root` and `Label` present as member variables. Author the widget's own setter functions (`SetCard`, `SetSeat`, …) with the Blueprint Graph Authoring tools above. To verify visually, instantiate with `create_widget_instance` in a PIE session, `add_to_viewport(0)`, then `take_screenshot`.
 
 ### Analyzing Performance
 

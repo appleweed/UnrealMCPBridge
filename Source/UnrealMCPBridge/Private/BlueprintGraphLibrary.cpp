@@ -21,6 +21,8 @@
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_FunctionResult.h"
 #include "K2Node_SpawnActorFromClass.h"
+#include "K2Node_DynamicCast.h"
+#include "K2Node_MakeArray.h"
 #include "Kismet/KismetMathLibrary.h"
 
 #include "Engine/SimpleConstructionScript.h"
@@ -134,6 +136,28 @@ UEdGraphNode* UBlueprintGraphLibrary::FindNodeByIdAcrossGraphs(UBlueprint* Bluep
 	if (UEdGraphNode* Found = Search(Blueprint->FunctionGraphs)) return Found;
 	if (UEdGraphNode* Found = Search(Blueprint->MacroGraphs)) return Found;
 	return nullptr;
+}
+
+UEdGraph* UBlueprintGraphLibrary::ResolveGraph(UBlueprint* Blueprint, const FString& GraphName)
+{
+	if (GraphName.IsEmpty())
+	{
+		return GetEventGraph(Blueprint);
+	}
+	return FindGraphByName(Blueprint, GraphName);
+}
+
+UEdGraphNode* UBlueprintGraphLibrary::FindNodeInGraphOrAcross(UBlueprint* Blueprint, const FString& GraphName, const FString& NodeId)
+{
+	// GraphName given -> scope the lookup to that graph (disambiguates node-id
+	// collisions between the event graph and function/macro graphs). Otherwise
+	// search every graph so function-graph nodes resolve without a name.
+	if (!GraphName.IsEmpty())
+	{
+		UEdGraph* Graph = FindGraphByName(Blueprint, GraphName);
+		return Graph ? FindNodeById(Graph, NodeId) : nullptr;
+	}
+	return FindNodeByIdAcrossGraphs(Blueprint, NodeId);
 }
 
 bool UBlueprintGraphLibrary::TypeNameToPinType(const FString& TypeName, FEdGraphPinType& OutPinType)
@@ -298,7 +322,8 @@ FString UBlueprintGraphLibrary::AddCallFunctionNode(
 	UClass* TargetClass,
 	const FString& FunctionName,
 	float PosX,
-	float PosY)
+	float PosY,
+	const FString& GraphName)
 {
 	if (!Blueprint)
 	{
@@ -311,10 +336,10 @@ FString UBlueprintGraphLibrary::AddCallFunctionNode(
 		return FString();
 	}
 
-	UEdGraph* EventGraph = GetEventGraph(Blueprint);
-	if (!EventGraph)
+	UEdGraph* Graph = ResolveGraph(Blueprint, GraphName);
+	if (!Graph)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] AddCallFunctionNode: No event graph found"));
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] AddCallFunctionNode: Graph '%s' not found"), *GraphName);
 		return FString();
 	}
 
@@ -334,15 +359,15 @@ FString UBlueprintGraphLibrary::AddCallFunctionNode(
 		return FString();
 	}
 
-	UEdGraphNode* Node = Spawner->Invoke(EventGraph, IBlueprintNodeBinder::FBindingSet(), FVector2D(PosX, PosY));
+	UEdGraphNode* Node = Spawner->Invoke(Graph, IBlueprintNodeBinder::FBindingSet(), FVector2D(PosX, PosY));
 	if (!Node)
 	{
 		// Fallback: Method C (direct creation)
 		UE_LOG(LogTemp, Warning, TEXT("[BlueprintGraphLib] Spawner->Invoke failed, using direct creation fallback"));
 
-		UK2Node_CallFunction* FuncNode = NewObject<UK2Node_CallFunction>(EventGraph);
+		UK2Node_CallFunction* FuncNode = NewObject<UK2Node_CallFunction>(Graph);
 		FuncNode->FunctionReference.SetExternalMember(FName(*FunctionName), TargetClass);
-		EventGraph->AddNode(FuncNode, true, false);
+		Graph->AddNode(FuncNode, true, false);
 		FuncNode->AllocateDefaultPins();
 		FuncNode->NodePosX = static_cast<int32>(PosX);
 		FuncNode->NodePosY = static_cast<int32>(PosY);
@@ -360,7 +385,8 @@ FString UBlueprintGraphLibrary::AddVariableGetNode(
 	UBlueprint* Blueprint,
 	const FString& VariableName,
 	float PosX,
-	float PosY)
+	float PosY,
+	const FString& GraphName)
 {
 	if (!Blueprint)
 	{
@@ -368,14 +394,14 @@ FString UBlueprintGraphLibrary::AddVariableGetNode(
 		return FString();
 	}
 
-	UEdGraph* EventGraph = GetEventGraph(Blueprint);
-	if (!EventGraph)
+	UEdGraph* Graph = ResolveGraph(Blueprint, GraphName);
+	if (!Graph)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] AddVariableGetNode: No event graph found"));
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] AddVariableGetNode: Graph '%s' not found"), *GraphName);
 		return FString();
 	}
 
-	UK2Node_VariableGet* Node = NewObject<UK2Node_VariableGet>(EventGraph);
+	UK2Node_VariableGet* Node = NewObject<UK2Node_VariableGet>(Graph);
 	Node->VariableReference.SetSelfMember(FName(*VariableName));
 
 	FEdGraphSchemaAction_K2NewNode Action;
@@ -384,7 +410,7 @@ FString UBlueprintGraphLibrary::AddVariableGetNode(
 	// PerformAction duplicates the template into the graph and renames the duplicate
 	// if the template's name collides with an existing node. Return the inserted
 	// node's name (post-rename), not the template's pre-insert name.
-	UEdGraphNode* CreatedNode = Action.PerformAction(EventGraph, NullPin, FGraphNodePosition(PosX, PosY));
+	UEdGraphNode* CreatedNode = Action.PerformAction(Graph, NullPin, FGraphNodePosition(PosX, PosY));
 
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
 
@@ -397,7 +423,8 @@ FString UBlueprintGraphLibrary::AddVariableSetNode(
 	UBlueprint* Blueprint,
 	const FString& VariableName,
 	float PosX,
-	float PosY)
+	float PosY,
+	const FString& GraphName)
 {
 	if (!Blueprint)
 	{
@@ -405,20 +432,20 @@ FString UBlueprintGraphLibrary::AddVariableSetNode(
 		return FString();
 	}
 
-	UEdGraph* EventGraph = GetEventGraph(Blueprint);
-	if (!EventGraph)
+	UEdGraph* Graph = ResolveGraph(Blueprint, GraphName);
+	if (!Graph)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] AddVariableSetNode: No event graph found"));
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] AddVariableSetNode: Graph '%s' not found"), *GraphName);
 		return FString();
 	}
 
-	UK2Node_VariableSet* Node = NewObject<UK2Node_VariableSet>(EventGraph);
+	UK2Node_VariableSet* Node = NewObject<UK2Node_VariableSet>(Graph);
 	Node->VariableReference.SetSelfMember(FName(*VariableName));
 
 	FEdGraphSchemaAction_K2NewNode Action;
 	Action.NodeTemplate = Node;
 	UEdGraphPin* NullPin = nullptr;
-	UEdGraphNode* CreatedNode = Action.PerformAction(EventGraph, NullPin, FGraphNodePosition(PosX, PosY));
+	UEdGraphNode* CreatedNode = Action.PerformAction(Graph, NullPin, FGraphNodePosition(PosX, PosY));
 
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
 
@@ -430,7 +457,8 @@ FString UBlueprintGraphLibrary::AddVariableSetNode(
 FString UBlueprintGraphLibrary::AddBranchNode(
 	UBlueprint* Blueprint,
 	float PosX,
-	float PosY)
+	float PosY,
+	const FString& GraphName)
 {
 	if (!Blueprint)
 	{
@@ -438,24 +466,195 @@ FString UBlueprintGraphLibrary::AddBranchNode(
 		return FString();
 	}
 
-	UEdGraph* EventGraph = GetEventGraph(Blueprint);
-	if (!EventGraph)
+	UEdGraph* Graph = ResolveGraph(Blueprint, GraphName);
+	if (!Graph)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] AddBranchNode: No event graph found"));
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] AddBranchNode: Graph '%s' not found"), *GraphName);
 		return FString();
 	}
 
-	UK2Node_IfThenElse* Node = NewObject<UK2Node_IfThenElse>(EventGraph);
+	UK2Node_IfThenElse* Node = NewObject<UK2Node_IfThenElse>(Graph);
 
 	FEdGraphSchemaAction_K2NewNode Action;
 	Action.NodeTemplate = Node;
 	UEdGraphPin* NullPin = nullptr;
-	UEdGraphNode* CreatedNode = Action.PerformAction(EventGraph, NullPin, FGraphNodePosition(PosX, PosY));
+	UEdGraphNode* CreatedNode = Action.PerformAction(Graph, NullPin, FGraphNodePosition(PosX, PosY));
 
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
 
 	const FString FinalName = CreatedNode ? CreatedNode->GetName() : Node->GetName();
 	UE_LOG(LogTemp, Display, TEXT("[BlueprintGraphLib] Added branch node -> %s"), *FinalName);
+	return FinalName;
+}
+
+FString UBlueprintGraphLibrary::AddCastNode(
+	UBlueprint* Blueprint,
+	UClass* TargetClass,
+	float PosX,
+	float PosY,
+	const FString& GraphName)
+{
+	if (!Blueprint)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] AddCastNode: Blueprint is null"));
+		return FString();
+	}
+	if (!TargetClass)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] AddCastNode: TargetClass is null"));
+		return FString();
+	}
+
+	UEdGraph* Graph = ResolveGraph(Blueprint, GraphName);
+	if (!Graph)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] AddCastNode: Graph '%s' not found"), *GraphName);
+		return FString();
+	}
+
+	// Impure dynamic cast (default): exec in/out + Cast Failed exec, "Object" input,
+	// "As<ClassName>" output. TargetType must be set before AllocateDefaultPins so the
+	// typed output pin is generated.
+	UK2Node_DynamicCast* Node = NewObject<UK2Node_DynamicCast>(Graph);
+	Node->TargetType = TargetClass;
+
+	FEdGraphSchemaAction_K2NewNode Action;
+	Action.NodeTemplate = Node;
+	UEdGraphPin* NullPin = nullptr;
+	UEdGraphNode* CreatedNode = Action.PerformAction(Graph, NullPin, FGraphNodePosition(PosX, PosY));
+
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+
+	const FString FinalName = CreatedNode ? CreatedNode->GetName() : Node->GetName();
+	UE_LOG(LogTemp, Display, TEXT("[BlueprintGraphLib] Added cast node -> %s (cast to %s)"),
+		*FinalName, *TargetClass->GetName());
+	return FinalName;
+}
+
+FString UBlueprintGraphLibrary::AddMakeArrayNode(
+	UBlueprint* Blueprint,
+	int32 NumInputs,
+	float PosX,
+	float PosY,
+	const FString& GraphName,
+	const FString& ElementType)
+{
+	if (!Blueprint)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] AddMakeArrayNode: Blueprint is null"));
+		return FString();
+	}
+
+	UEdGraph* Graph = ResolveGraph(Blueprint, GraphName);
+	if (!Graph)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] AddMakeArrayNode: Graph '%s' not found"), *GraphName);
+		return FString();
+	}
+
+	UK2Node_MakeArray* Node = NewObject<UK2Node_MakeArray>(Graph);
+	Node->NumInputs = FMath::Max(1, NumInputs);
+
+	FEdGraphSchemaAction_K2NewNode Action;
+	Action.NodeTemplate = Node;
+	UEdGraphPin* NullPin = nullptr;
+	UEdGraphNode* CreatedNode = Action.PerformAction(Graph, NullPin, FGraphNodePosition(PosX, PosY));
+
+	// PerformAction allocates default pins from the template's NumInputs, but a
+	// duplicated template can come back with the default single pin - force the
+	// pin set to match the requested count.
+	UK2Node_MakeArray* MadeNode = Cast<UK2Node_MakeArray>(CreatedNode);
+	if (MadeNode)
+	{
+		if (MadeNode->NumInputs != FMath::Max(1, NumInputs))
+		{
+			MadeNode->NumInputs = FMath::Max(1, NumInputs);
+			MadeNode->ReconstructNode();
+		}
+	}
+
+	// Resolve the element type up front when asked. Otherwise the pins stay wildcards
+	// and the FIRST connection resolves them - which reconstructs the node and throws
+	// away any defaults already set on the element pins.
+	if (MadeNode && !ElementType.IsEmpty())
+	{
+		FEdGraphPinType ResolvedType;
+		if (TypeNameToPinType(ElementType, ResolvedType))
+		{
+			// PropagatePinType() is protected, so apply the types directly: the output
+			// pin becomes an array of T, every input pin becomes a plain T.
+			for (UEdGraphPin* Pin : MadeNode->Pins)
+			{
+				if (!Pin) continue;
+				Pin->PinType = ResolvedType;
+				Pin->PinType.ContainerType = (Pin->Direction == EGPD_Output)
+					? EPinContainerType::Array
+					: EPinContainerType::None;
+			}
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[BlueprintGraphLib] AddMakeArrayNode: unknown ElementType '%s' - pins left as wildcard"),
+				*ElementType);
+		}
+	}
+
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+
+	const FString FinalName = CreatedNode ? CreatedNode->GetName() : Node->GetName();
+	UE_LOG(LogTemp, Display, TEXT("[BlueprintGraphLib] Added make-array node -> %s (%d inputs)"),
+		*FinalName, FMath::Max(1, NumInputs));
+	return FinalName;
+}
+
+FString UBlueprintGraphLibrary::AddVariableGetNodeForClass(
+	UBlueprint* Blueprint,
+	const FString& VariableName,
+	UClass* OwnerClass,
+	float PosX,
+	float PosY,
+	const FString& GraphName)
+{
+	if (!Blueprint)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] AddVariableGetNodeForClass: Blueprint is null"));
+		return FString();
+	}
+	if (!OwnerClass)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] AddVariableGetNodeForClass: OwnerClass is null"));
+		return FString();
+	}
+
+	UEdGraph* Graph = ResolveGraph(Blueprint, GraphName);
+	if (!Graph)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] AddVariableGetNodeForClass: Graph '%s' not found"), *GraphName);
+		return FString();
+	}
+
+	if (!FindFProperty<FProperty>(OwnerClass, FName(*VariableName)))
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] AddVariableGetNodeForClass: '%s' not found on %s"),
+			*VariableName, *OwnerClass->GetName());
+		return FString();
+	}
+
+	// SetExternalMember (rather than SetSelfMember) is what produces the target pin.
+	UK2Node_VariableGet* Node = NewObject<UK2Node_VariableGet>(Graph);
+	Node->VariableReference.SetExternalMember(FName(*VariableName), OwnerClass);
+
+	FEdGraphSchemaAction_K2NewNode Action;
+	Action.NodeTemplate = Node;
+	UEdGraphPin* NullPin = nullptr;
+	UEdGraphNode* CreatedNode = Action.PerformAction(Graph, NullPin, FGraphNodePosition(PosX, PosY));
+
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+
+	const FString FinalName = CreatedNode ? CreatedNode->GetName() : Node->GetName();
+	UE_LOG(LogTemp, Display, TEXT("[BlueprintGraphLib] Added external variable get '%s' on %s -> %s"),
+		*VariableName, *OwnerClass->GetName(), *FinalName);
 	return FinalName;
 }
 
@@ -496,7 +695,8 @@ FString UBlueprintGraphLibrary::AddSpawnActorNode(
 	UBlueprint* Blueprint,
 	UClass* ActorClass,
 	float PosX,
-	float PosY)
+	float PosY,
+	const FString& GraphName)
 {
 	if (!Blueprint)
 	{
@@ -509,10 +709,10 @@ FString UBlueprintGraphLibrary::AddSpawnActorNode(
 		return FString();
 	}
 
-	UEdGraph* EventGraph = GetEventGraph(Blueprint);
-	if (!EventGraph)
+	UEdGraph* Graph = ResolveGraph(Blueprint, GraphName);
+	if (!Graph)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] AddSpawnActorNode: No event graph found"));
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] AddSpawnActorNode: Graph '%s' not found"), *GraphName);
 		return FString();
 	}
 
@@ -521,11 +721,11 @@ FString UBlueprintGraphLibrary::AddSpawnActorNode(
 	// via FindPinChecked, but FGraphNodeCreator::Finalize calls PostPlacedNewNode
 	// BEFORE AllocateDefaultPins, so the pin doesn't exist yet and the check fires.
 	// We allocate pins first, then call PostPlacedNewNode ourselves.
-	UK2Node_SpawnActorFromClass* Node = NewObject<UK2Node_SpawnActorFromClass>(EventGraph);
+	UK2Node_SpawnActorFromClass* Node = NewObject<UK2Node_SpawnActorFromClass>(Graph);
 	Node->CreateNewGuid();
 	Node->NodePosX = static_cast<int32>(PosX);
 	Node->NodePosY = static_cast<int32>(PosY);
-	EventGraph->AddNode(Node, /*bSelectNewNode*/ true, /*bFromUI*/ false);
+	Graph->AddNode(Node, /*bSelectNewNode*/ true, /*bFromUI*/ false);
 	Node->AllocateDefaultPins();
 	Node->PostPlacedNewNode();
 
@@ -558,12 +758,12 @@ FString UBlueprintGraphLibrary::AddSpawnActorNode(
 			UFunction* MakeTransformFunc = UKismetMathLibrary::StaticClass()->FindFunctionByName(MakeTransformFuncName);
 			if (MakeTransformFunc)
 			{
-				UK2Node_CallFunction* MakeXfNode = NewObject<UK2Node_CallFunction>(EventGraph);
+				UK2Node_CallFunction* MakeXfNode = NewObject<UK2Node_CallFunction>(Graph);
 				MakeXfNode->CreateNewGuid();
 				MakeXfNode->FunctionReference.SetExternalMember(MakeTransformFuncName, UKismetMathLibrary::StaticClass());
 				MakeXfNode->NodePosX = Node->NodePosX - 250;
 				MakeXfNode->NodePosY = Node->NodePosY + 50;
-				EventGraph->AddNode(MakeXfNode, /*bSelectNewNode*/ false, /*bFromUI*/ false);
+				Graph->AddNode(MakeXfNode, /*bSelectNewNode*/ false, /*bFromUI*/ false);
 				MakeXfNode->AllocateDefaultPins();
 				MakeXfNode->PostPlacedNewNode();
 
@@ -597,7 +797,8 @@ bool UBlueprintGraphLibrary::ConnectPins(
 	const FString& SourceNodeId,
 	const FString& SourcePinName,
 	const FString& TargetNodeId,
-	const FString& TargetPinName)
+	const FString& TargetPinName,
+	const FString& GraphName)
 {
 	if (!Blueprint)
 	{
@@ -605,21 +806,14 @@ bool UBlueprintGraphLibrary::ConnectPins(
 		return false;
 	}
 
-	UEdGraph* EventGraph = GetEventGraph(Blueprint);
-	if (!EventGraph)
-	{
-		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] ConnectPins: No event graph found"));
-		return false;
-	}
-
-	UEdGraphNode* SourceNode = FindNodeById(EventGraph, SourceNodeId);
+	UEdGraphNode* SourceNode = FindNodeInGraphOrAcross(Blueprint, GraphName, SourceNodeId);
 	if (!SourceNode)
 	{
 		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] ConnectPins: Source node '%s' not found"), *SourceNodeId);
 		return false;
 	}
 
-	UEdGraphNode* TargetNode = FindNodeById(EventGraph, TargetNodeId);
+	UEdGraphNode* TargetNode = FindNodeInGraphOrAcross(Blueprint, GraphName, TargetNodeId);
 	if (!TargetNode)
 	{
 		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] ConnectPins: Target node '%s' not found"), *TargetNodeId);
@@ -664,7 +858,8 @@ bool UBlueprintGraphLibrary::SetPinDefaultValue(
 	UBlueprint* Blueprint,
 	const FString& NodeId,
 	const FString& PinName,
-	const FString& Value)
+	const FString& Value,
+	const FString& GraphName)
 {
 	if (!Blueprint)
 	{
@@ -672,14 +867,7 @@ bool UBlueprintGraphLibrary::SetPinDefaultValue(
 		return false;
 	}
 
-	UEdGraph* EventGraph = GetEventGraph(Blueprint);
-	if (!EventGraph)
-	{
-		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] SetPinDefaultValue: No event graph found"));
-		return false;
-	}
-
-	UEdGraphNode* Node = FindNodeById(EventGraph, NodeId);
+	UEdGraphNode* Node = FindNodeInGraphOrAcross(Blueprint, GraphName, NodeId);
 	if (!Node)
 	{
 		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] SetPinDefaultValue: Node '%s' not found"), *NodeId);
@@ -690,6 +878,19 @@ bool UBlueprintGraphLibrary::SetPinDefaultValue(
 	if (!Pin)
 	{
 		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] SetPinDefaultValue: Pin '%s' not found on node '%s'"),
+			*PinName, *NodeId);
+		return false;
+	}
+
+	// A wildcard pin cannot hold a default: resolving its type reconstructs the node
+	// and discards the value. Setting one used to "succeed" and then silently vanish,
+	// so refuse it outright rather than reporting a write that won't survive.
+	if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Wildcard)
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[BlueprintGraphLib] SetPinDefaultValue: pin '%s' on '%s' is a WILDCARD - its type must be "
+			     "resolved first or the default is discarded. Connect the node's output to a typed pin, or "
+			     "create the node with an explicit element type (see AddMakeArrayNode's ElementType)."),
 			*PinName, *NodeId);
 		return false;
 	}
@@ -721,6 +922,130 @@ bool UBlueprintGraphLibrary::SetPinDefaultValue(
 	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 
 	UE_LOG(LogTemp, Display, TEXT("[BlueprintGraphLib] Set pin default: %s.%s = %s"), *NodeId, *PinName, *Value);
+	return true;
+}
+
+bool UBlueprintGraphLibrary::BreakPinLinks(
+	UBlueprint* Blueprint,
+	const FString& NodeId,
+	const FString& PinName,
+	const FString& GraphName,
+	const FString& TargetNodeId,
+	const FString& TargetPinName)
+{
+	if (!Blueprint)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] BreakPinLinks: Blueprint is null"));
+		return false;
+	}
+
+	UEdGraphNode* Node = FindNodeInGraphOrAcross(Blueprint, GraphName, NodeId);
+	if (!Node)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] BreakPinLinks: Node '%s' not found"), *NodeId);
+		return false;
+	}
+
+	UEdGraphPin* Pin = Node->FindPin(FName(*PinName));
+	if (!Pin)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] BreakPinLinks: Pin '%s' not found on '%s'"), *PinName, *NodeId);
+		return false;
+	}
+
+	const bool bSpecificTarget = !TargetNodeId.IsEmpty();
+	bool bBrokeAny = false;
+
+	if (!bSpecificTarget)
+	{
+		bBrokeAny = Pin->LinkedTo.Num() > 0;
+		Pin->BreakAllPinLinks();
+	}
+	else
+	{
+		// Copy: BreakSinglePinLink mutates LinkedTo while we iterate.
+		TArray<UEdGraphPin*> Links = Pin->LinkedTo;
+		for (UEdGraphPin* Linked : Links)
+		{
+			if (!Linked || !Linked->GetOwningNode()) continue;
+			if (Linked->GetOwningNode()->GetName() != TargetNodeId) continue;
+			if (!TargetPinName.IsEmpty() && Linked->GetName() != TargetPinName) continue;
+
+			Pin->BreakLinkTo(Linked);
+			bBrokeAny = true;
+		}
+	}
+
+	if (bBrokeAny)
+	{
+		FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+		UE_LOG(LogTemp, Display, TEXT("[BlueprintGraphLib] Broke links on %s.%s"), *NodeId, *PinName);
+	}
+	return bBrokeAny;
+}
+
+bool UBlueprintGraphLibrary::RemoveNode(
+	UBlueprint* Blueprint,
+	const FString& NodeId,
+	const FString& GraphName)
+{
+	if (!Blueprint)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] RemoveNode: Blueprint is null"));
+		return false;
+	}
+
+	UEdGraphNode* Node = FindNodeInGraphOrAcross(Blueprint, GraphName, NodeId);
+	if (!Node)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] RemoveNode: Node '%s' not found"), *NodeId);
+		return false;
+	}
+
+	if (!Node->CanUserDeleteNode())
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] RemoveNode: Node '%s' cannot be deleted (entry/result node?)"), *NodeId);
+		return false;
+	}
+
+	Node->BreakAllNodeLinks();
+
+	UEdGraph* OwningGraph = Node->GetGraph();
+	if (!OwningGraph)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] RemoveNode: Node '%s' has no owning graph"), *NodeId);
+		return false;
+	}
+
+	OwningGraph->RemoveNode(Node);
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+
+	UE_LOG(LogTemp, Display, TEXT("[BlueprintGraphLib] Removed node %s"), *NodeId);
+	return true;
+}
+
+bool UBlueprintGraphLibrary::ReconstructNode(
+	UBlueprint* Blueprint,
+	const FString& NodeId,
+	const FString& GraphName)
+{
+	if (!Blueprint)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] ReconstructNode: Blueprint is null"));
+		return false;
+	}
+
+	UEdGraphNode* Node = FindNodeInGraphOrAcross(Blueprint, GraphName, NodeId);
+	if (!Node)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] ReconstructNode: Node '%s' not found"), *NodeId);
+		return false;
+	}
+
+	Node->ReconstructNode();
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+
+	UE_LOG(LogTemp, Display, TEXT("[BlueprintGraphLib] Reconstructed node %s"), *NodeId);
 	return true;
 }
 
@@ -843,6 +1168,104 @@ bool UBlueprintGraphLibrary::AddFunctionParameter(
 // VARIABLES
 // =============================================================================
 
+FString UBlueprintGraphLibrary::AddFunctionOverride(
+	UBlueprint* Blueprint,
+	const FString& FunctionName)
+{
+	if (!Blueprint)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] AddFunctionOverride: Blueprint is null"));
+		return FString();
+	}
+	if (!Blueprint->ParentClass)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] AddFunctionOverride: Blueprint has no parent class"));
+		return FString();
+	}
+
+	const FName FuncName(*FunctionName);
+	UFunction* Func = Blueprint->ParentClass->FindFunctionByName(FuncName);
+	if (!Func)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] AddFunctionOverride: '%s' not found on parent class %s"),
+			*FunctionName, *Blueprint->ParentClass->GetName());
+		return FString();
+	}
+
+	// Already overridden as a function graph?
+	if (UEdGraph* Existing = FindGraphByName(Blueprint, FunctionName))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[BlueprintGraphLib] AddFunctionOverride: '%s' already overridden"), *FunctionName);
+		return Existing->GetName();
+	}
+
+	// Events (BlueprintImplementableEvent / BlueprintNativeEvent with no return value)
+	// are overridden by placing a K2Node_Event in the event graph, not by creating a
+	// function graph. This is the same split the My Blueprint > Override dropdown uses.
+	if (UEdGraphSchema_K2::FunctionCanBePlacedAsEvent(Func))
+	{
+		UEdGraph* EventGraph = GetEventGraph(Blueprint);
+		if (!EventGraph)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] AddFunctionOverride: no event graph"));
+			return FString();
+		}
+
+		// Don't create a duplicate event node.
+		for (UEdGraphNode* Node : EventGraph->Nodes)
+		{
+			if (UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node))
+			{
+				if (EventNode->EventReference.GetMemberName() == FuncName)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("[BlueprintGraphLib] AddFunctionOverride: event '%s' already present"), *FunctionName);
+					return EventNode->GetName();
+				}
+			}
+		}
+
+		UK2Node_Event* NewEvent = NewObject<UK2Node_Event>(EventGraph);
+		NewEvent->EventReference.SetExternalMember(FuncName, CastChecked<UClass>(Func->GetOuter()));
+		NewEvent->bOverrideFunction = true;
+
+		FEdGraphSchemaAction_K2NewNode Action;
+		Action.NodeTemplate = NewEvent;
+		UEdGraphPin* NullPin = nullptr;
+		UEdGraphNode* CreatedNode = Action.PerformAction(EventGraph, NullPin, FGraphNodePosition(0.f, 0.f));
+
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+
+		const FString FinalName = CreatedNode ? CreatedNode->GetName() : NewEvent->GetName();
+		UE_LOG(LogTemp, Display, TEXT("[BlueprintGraphLib] Overrode event '%s' -> %s"), *FunctionName, *FinalName);
+		return FinalName;
+	}
+
+	// Function override: a new graph carrying the parent's signature.
+	UEdGraph* NewGraph = FBlueprintEditorUtils::CreateNewGraph(
+		Blueprint,
+		FuncName,
+		UEdGraph::StaticClass(),
+		UEdGraphSchema_K2::StaticClass());
+	if (!NewGraph)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] AddFunctionOverride: CreateNewGraph failed for '%s'"), *FunctionName);
+		return FString();
+	}
+
+	// bIsUserCreated=false + the signature class is what makes this an OVERRIDE rather
+	// than a new user function that merely shares the name.
+	FBlueprintEditorUtils::AddFunctionGraph<UClass>(
+		Blueprint,
+		NewGraph,
+		/*bIsUserCreated=*/false,
+		CastChecked<UClass>(Func->GetOuter()));
+
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+
+	UE_LOG(LogTemp, Display, TEXT("[BlueprintGraphLib] Overrode function '%s' (graph created)"), *FunctionName);
+	return NewGraph->GetName();
+}
+
 bool UBlueprintGraphLibrary::AddVariable(
 	UBlueprint* Blueprint,
 	const FString& Name,
@@ -921,7 +1344,7 @@ bool UBlueprintGraphLibrary::CompileAndSaveBlueprint(UBlueprint* Blueprint)
 // INTROSPECTION
 // =============================================================================
 
-TArray<FString> UBlueprintGraphLibrary::GetNodeIds(UBlueprint* Blueprint)
+TArray<FString> UBlueprintGraphLibrary::GetNodeIds(UBlueprint* Blueprint, const FString& GraphName)
 {
 	TArray<FString> Result;
 
@@ -931,13 +1354,14 @@ TArray<FString> UBlueprintGraphLibrary::GetNodeIds(UBlueprint* Blueprint)
 		return Result;
 	}
 
-	UEdGraph* EventGraph = GetEventGraph(Blueprint);
-	if (!EventGraph)
+	UEdGraph* Graph = ResolveGraph(Blueprint, GraphName);
+	if (!Graph)
 	{
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] GetNodeIds: Graph '%s' not found"), *GraphName);
 		return Result;
 	}
 
-	for (UEdGraphNode* Node : EventGraph->Nodes)
+	for (UEdGraphNode* Node : Graph->Nodes)
 	{
 		if (Node)
 		{
@@ -948,9 +1372,36 @@ TArray<FString> UBlueprintGraphLibrary::GetNodeIds(UBlueprint* Blueprint)
 	return Result;
 }
 
+TArray<FString> UBlueprintGraphLibrary::GetGraphNames(UBlueprint* Blueprint)
+{
+	TArray<FString> Result;
+	if (!Blueprint)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] GetGraphNames: Blueprint is null"));
+		return Result;
+	}
+
+	auto Collect = [&Result](const TArray<UEdGraph*>& Graphs, const TCHAR* Kind)
+	{
+		for (UEdGraph* Graph : Graphs)
+		{
+			if (Graph)
+			{
+				Result.Add(FString::Printf(TEXT("%s|%s"), *Graph->GetName(), Kind));
+			}
+		}
+	};
+
+	Collect(Blueprint->UbergraphPages, TEXT("Ubergraph"));
+	Collect(Blueprint->FunctionGraphs, TEXT("Function"));
+	Collect(Blueprint->MacroGraphs,    TEXT("Macro"));
+	return Result;
+}
+
 TArray<FString> UBlueprintGraphLibrary::GetPinNames(
 	UBlueprint* Blueprint,
-	const FString& NodeId)
+	const FString& NodeId,
+	const FString& GraphName)
 {
 	TArray<FString> Result;
 
@@ -960,13 +1411,7 @@ TArray<FString> UBlueprintGraphLibrary::GetPinNames(
 		return Result;
 	}
 
-	UEdGraph* EventGraph = GetEventGraph(Blueprint);
-	if (!EventGraph)
-	{
-		return Result;
-	}
-
-	UEdGraphNode* Node = FindNodeById(EventGraph, NodeId);
+	UEdGraphNode* Node = FindNodeInGraphOrAcross(Blueprint, GraphName, NodeId);
 	if (!Node)
 	{
 		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] GetPinNames: Node '%s' not found"), *NodeId);
@@ -986,7 +1431,8 @@ TArray<FString> UBlueprintGraphLibrary::GetPinNames(
 
 TArray<FString> UBlueprintGraphLibrary::GetPinDetails(
 	UBlueprint* Blueprint,
-	const FString& NodeId)
+	const FString& NodeId,
+	const FString& GraphName)
 {
 	TArray<FString> Result;
 
@@ -996,13 +1442,7 @@ TArray<FString> UBlueprintGraphLibrary::GetPinDetails(
 		return Result;
 	}
 
-	UEdGraph* EventGraph = GetEventGraph(Blueprint);
-	if (!EventGraph)
-	{
-		return Result;
-	}
-
-	UEdGraphNode* Node = FindNodeById(EventGraph, NodeId);
+	UEdGraphNode* Node = FindNodeInGraphOrAcross(Blueprint, GraphName, NodeId);
 	if (!Node)
 	{
 		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] GetPinDetails: Node '%s' not found"), *NodeId);
@@ -1022,9 +1462,9 @@ TArray<FString> UBlueprintGraphLibrary::GetPinDetails(
 	return Result;
 }
 
-FString UBlueprintGraphLibrary::GetNodeTitle(UBlueprint* Blueprint, const FString& NodeId)
+FString UBlueprintGraphLibrary::GetNodeTitle(UBlueprint* Blueprint, const FString& NodeId, const FString& GraphName)
 {
-	UEdGraphNode* Node = FindNodeByIdAcrossGraphs(Blueprint, NodeId);
+	UEdGraphNode* Node = FindNodeInGraphOrAcross(Blueprint, GraphName, NodeId);
 	if (!Node)
 	{
 		return FString();
@@ -1147,11 +1587,12 @@ FString UBlueprintGraphLibrary::GetMacroReference(UBlueprint* Blueprint, const F
 TArray<FString> UBlueprintGraphLibrary::GetPinConnections(
 	UBlueprint* Blueprint,
 	const FString& NodeId,
-	const FString& PinName)
+	const FString& PinName,
+	const FString& GraphName)
 {
 	TArray<FString> Result;
 
-	UEdGraphNode* Node = FindNodeByIdAcrossGraphs(Blueprint, NodeId);
+	UEdGraphNode* Node = FindNodeInGraphOrAcross(Blueprint, GraphName, NodeId);
 	if (!Node)
 	{
 		UE_LOG(LogTemp, Error, TEXT("[BlueprintGraphLib] GetPinConnections: Node '%s' not found"), *NodeId);
@@ -1179,9 +1620,10 @@ TArray<FString> UBlueprintGraphLibrary::GetPinConnections(
 FString UBlueprintGraphLibrary::GetPinDefaultValue(
 	UBlueprint* Blueprint,
 	const FString& NodeId,
-	const FString& PinName)
+	const FString& PinName,
+	const FString& GraphName)
 {
-	UEdGraphNode* Node = FindNodeByIdAcrossGraphs(Blueprint, NodeId);
+	UEdGraphNode* Node = FindNodeInGraphOrAcross(Blueprint, GraphName, NodeId);
 	if (!Node)
 	{
 		return FString();

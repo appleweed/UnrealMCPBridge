@@ -715,16 +715,18 @@ def get_csv_profile() -> str:
 # node_id is a string like "K2Node_CallFunction_27" returned by node lookup.
 
 @mcp.tool()
-def get_node_title(blueprint_path: str, node_id: str) -> str:
+def get_node_title(blueprint_path: str, node_id: str, graph_name: str = "") -> str:
     """
     Get the human-readable list-view title of a Blueprint node.
     Examples: "Print String", "Event BeginPlay", "Branch", "Get MyVar".
 
     Use after listing node IDs to identify what each node is.
+    graph_name scopes node lookup to that graph (empty = search all graphs).
     """
     result = send_command("get_node_title", {
         "blueprint_path": blueprint_path,
         "node_id": node_id,
+        "graph_name": graph_name,
     })
     if result.get("status") == "success":
         return result.get("result", "")
@@ -790,7 +792,8 @@ def get_macro_reference(blueprint_path: str, node_id: str) -> str:
     return f"Error: {result.get('message', 'Unknown error')}"
 
 @mcp.tool()
-def get_pin_connections(blueprint_path: str, node_id: str, pin_name: str) -> str:
+def get_pin_connections(blueprint_path: str, node_id: str, pin_name: str,
+                        graph_name: str = "") -> str:
     """
     Get the pins this pin is connected to.
     Returns JSON list of "OtherNodeId.OtherPinName" strings.
@@ -798,27 +801,38 @@ def get_pin_connections(blueprint_path: str, node_id: str, pin_name: str) -> str
     This is the key function for walking a Blueprint graph - follow exec
     pins ("then", "execute") to trace control flow, or follow data pins
     to trace value flow between nodes.
+
+    IMPORTANT: pass graph_name whenever the Blueprint has more than one graph.
+    Node IDs collide across graphs (every function graph has its own
+    "K2Node_FunctionEntry_0"), so an unscoped read can silently return a
+    different graph's node.
     """
     result = send_command("get_pin_connections", {
         "blueprint_path": blueprint_path,
         "node_id": node_id,
         "pin_name": pin_name,
+        "graph_name": graph_name,
     })
     if result.get("status") == "success":
         return json.dumps(result.get("result", []))
     return f"Error: {result.get('message', 'Unknown error')}"
 
 @mcp.tool()
-def get_pin_default_value(blueprint_path: str, node_id: str, pin_name: str) -> str:
+def get_pin_default_value(blueprint_path: str, node_id: str, pin_name: str,
+                          graph_name: str = "") -> str:
     """
     Get the default literal value of an unconnected input pin.
     For object/class pins returns the asset path; for value pins
     returns the literal string. Empty if no default is set.
+
+    Pass graph_name when the Blueprint has more than one graph - node IDs
+    collide across graphs and an unscoped read may resolve to the wrong node.
     """
     result = send_command("get_pin_default_value", {
         "blueprint_path": blueprint_path,
         "node_id": node_id,
         "pin_name": pin_name,
+        "graph_name": graph_name,
     })
     if result.get("status") == "success":
         return result.get("result", "")
@@ -885,43 +899,69 @@ def get_component_template_class(blueprint_path: str, component_name: str) -> st
 # ----------------------------------------------------------------------------
 
 @mcp.tool()
-def get_node_ids(blueprint_path: str) -> str:
+def get_node_ids(blueprint_path: str, graph_name: str = "") -> str:
     """
-    List all node IDs in a Blueprint's event graph.
-    Returns JSON list. For non-event graphs (functions, macros), use
-    get_node_ids_in_graph() with the graph name instead.
-    """
-    result = send_command("get_node_ids", {"blueprint_path": blueprint_path})
-    if result.get("status") == "success":
-        return json.dumps(result.get("result", []))
-    return f"Error: {result.get('message', 'Unknown error')}"
+    List node IDs in a graph. Returns JSON list.
 
-@mcp.tool()
-def get_pin_names(blueprint_path: str, node_id: str) -> str:
+    WARNING: with graph_name empty this returns ONLY the event graph's nodes.
+    A Blueprint can have several ubergraph pages (e.g. a separate input-actions
+    page) whose nodes are invisible here - a search built on the default will
+    report "not found" for nodes that plainly exist. Call get_graph_names()
+    first to enumerate every graph, then pass graph_name.
     """
-    List all pin names on a node. Returns JSON list of internal pin names
-    (e.g., "execute", "then", "ReturnValue"). Pair with get_pin_details()
-    for direction and type info.
-    """
-    result = send_command("get_pin_names", {
+    result = send_command("get_node_ids", {
         "blueprint_path": blueprint_path,
-        "node_id": node_id,
+        "graph_name": graph_name,
     })
     if result.get("status") == "success":
         return json.dumps(result.get("result", []))
     return f"Error: {result.get('message', 'Unknown error')}"
 
 @mcp.tool()
-def get_pin_details(blueprint_path: str, node_id: str) -> str:
+def get_graph_names(blueprint_path: str) -> str:
+    """
+    List EVERY graph on a Blueprint. Returns JSON list of "Name|Type" strings
+    where Type is "Ubergraph", "Function", or "Macro".
+
+    Use this before any graph-wide search. get_function_graph_names() lists only
+    true functions, so extra ubergraph pages are otherwise undiscoverable and
+    searches silently return false negatives.
+    """
+    result = send_command("get_graph_names", {"blueprint_path": blueprint_path})
+    if result.get("status") == "success":
+        return json.dumps(result.get("result", []))
+    return f"Error: {result.get('message', 'Unknown error')}"
+
+@mcp.tool()
+def get_pin_names(blueprint_path: str, node_id: str, graph_name: str = "") -> str:
+    """
+    List all pin names on a node. Returns JSON list of internal pin names
+    (e.g., "execute", "then", "ReturnValue"). Pair with get_pin_details()
+    for direction and type info. graph_name scopes node lookup to that graph
+    (empty = search all graphs); pass the function graph name to read
+    FunctionEntry/FunctionResult and other function-body node pins.
+    """
+    result = send_command("get_pin_names", {
+        "blueprint_path": blueprint_path,
+        "node_id": node_id, "graph_name": graph_name,
+    })
+    if result.get("status") == "success":
+        return json.dumps(result.get("result", []))
+    return f"Error: {result.get('message', 'Unknown error')}"
+
+@mcp.tool()
+def get_pin_details(blueprint_path: str, node_id: str, graph_name: str = "") -> str:
     """
     Get detailed pin info for a node.
     Returns JSON list of strings in format "PinName|Direction|Type"
     where Direction is "Input" or "Output" and Type is the pin category
-    (exec, bool, int, float, struct, object, etc.).
+    (exec, bool, int, float, struct, object, etc.). graph_name scopes node
+    lookup to that graph (empty = search all graphs); pass the function graph
+    name to read FunctionEntry/FunctionResult and other function-body node pins.
     """
     result = send_command("get_pin_details", {
         "blueprint_path": blueprint_path,
-        "node_id": node_id,
+        "node_id": node_id, "graph_name": graph_name,
     })
     if result.get("status") == "success":
         return json.dumps(result.get("result", []))
@@ -972,7 +1012,7 @@ def add_event_node(blueprint_path: str, event_name: str, pos_x: float = 0, pos_y
 
 @mcp.tool()
 def add_call_function_node(blueprint_path: str, target_class_path: str, function_name: str,
-                           pos_x: float = 0, pos_y: float = 0) -> str:
+                           pos_x: float = 0, pos_y: float = 0, graph_name: str = "") -> str:
     """
     Add a function call node.
 
@@ -980,6 +1020,7 @@ def add_call_function_node(blueprint_path: str, target_class_path: str, function
         target_class_path: Class that owns the function
             (e.g., "/Script/Engine.KismetSystemLibrary", "/Script/Engine.KismetMathLibrary")
         function_name: Internal function name (e.g., "PrintString", "K2_SetTimer")
+        graph_name: Function graph to add to (empty = the event graph)
 
     Returns the node ID string.
     """
@@ -987,7 +1028,7 @@ def add_call_function_node(blueprint_path: str, target_class_path: str, function
         "blueprint_path": blueprint_path,
         "target_class_path": target_class_path,
         "function_name": function_name,
-        "pos_x": pos_x, "pos_y": pos_y,
+        "pos_x": pos_x, "pos_y": pos_y, "graph_name": graph_name,
     })
     if result.get("status") == "success":
         return result.get("result", "")
@@ -995,15 +1036,16 @@ def add_call_function_node(blueprint_path: str, target_class_path: str, function
 
 @mcp.tool()
 def add_variable_get_node(blueprint_path: str, variable_name: str,
-                          pos_x: float = 0, pos_y: float = 0) -> str:
+                          pos_x: float = 0, pos_y: float = 0, graph_name: str = "") -> str:
     """
     Add a variable Get node. Variable must already exist on the Blueprint
-    (via add_variable()). Returns the node ID.
+    (via add_variable()). graph_name targets a function graph (empty = the event graph).
+    Returns the node ID.
     """
     result = send_command("add_variable_get_node", {
         "blueprint_path": blueprint_path,
         "variable_name": variable_name,
-        "pos_x": pos_x, "pos_y": pos_y,
+        "pos_x": pos_x, "pos_y": pos_y, "graph_name": graph_name,
     })
     if result.get("status") == "success":
         return result.get("result", "")
@@ -1011,29 +1053,209 @@ def add_variable_get_node(blueprint_path: str, variable_name: str,
 
 @mcp.tool()
 def add_variable_set_node(blueprint_path: str, variable_name: str,
-                          pos_x: float = 0, pos_y: float = 0) -> str:
+                          pos_x: float = 0, pos_y: float = 0, graph_name: str = "") -> str:
     """
     Add a variable Set node. Variable must already exist on the Blueprint.
+    graph_name targets a function graph by name (empty = the event graph).
     Returns the node ID.
     """
     result = send_command("add_variable_set_node", {
         "blueprint_path": blueprint_path,
         "variable_name": variable_name,
-        "pos_x": pos_x, "pos_y": pos_y,
+        "pos_x": pos_x, "pos_y": pos_y, "graph_name": graph_name,
     })
     if result.get("status") == "success":
         return result.get("result", "")
     return f"Error: {result.get('message', 'Unknown error')}"
 
 @mcp.tool()
-def add_branch_node(blueprint_path: str, pos_x: float = 0, pos_y: float = 0) -> str:
+def add_branch_node(blueprint_path: str, pos_x: float = 0, pos_y: float = 0, graph_name: str = "") -> str:
     """
     Add a Branch (if/else) node. Returns the node ID.
-    Wire the bool input to the "Condition" pin and the exec outputs from "True"/"False".
+    Wire the bool input to the "Condition" pin and the exec outputs from "then"/"else".
+    graph_name targets a function graph by name (empty = the event graph).
     """
     result = send_command("add_branch_node", {
         "blueprint_path": blueprint_path,
-        "pos_x": pos_x, "pos_y": pos_y,
+        "pos_x": pos_x, "pos_y": pos_y, "graph_name": graph_name,
+    })
+    if result.get("status") == "success":
+        return result.get("result", "")
+    return f"Error: {result.get('message', 'Unknown error')}"
+
+@mcp.tool()
+def add_make_array_node(blueprint_path: str, num_inputs: int = 1,
+                        pos_x: float = 0, pos_y: float = 0, graph_name: str = "",
+                        element_type: str = "") -> str:
+    """
+    Add a Make Array node with num_inputs input pins.
+
+    Pins are named "[0]", "[1]", ... and the output pin is "Array".
+
+    element_type ("name", "int", "float", "string", "bool", "Vector", a struct/class
+    path, ...) types the pins immediately. STRONGLY RECOMMENDED when you plan to set
+    element defaults: without it the pins stay wildcards until the first connection
+    resolves them, and that resolution reconstructs the node and DISCARDS any defaults
+    you already set. (set_pin_default_value now refuses wildcard pins outright rather
+    than reporting a write that won't survive.)
+
+    Left untyped, the first connection fixes the element type and later mismatches are
+    rejected - useful as a built-in check when wiring parallel arrays.
+
+    Returns the node ID.
+    """
+    result = send_command("add_make_array_node", {
+        "blueprint_path": blueprint_path,
+        "num_inputs": num_inputs,
+        "pos_x": pos_x,
+        "pos_y": pos_y,
+        "graph_name": graph_name,
+        "element_type": element_type,
+    })
+    if result.get("status") == "success":
+        return result.get("result", "")
+    return f"Error: {result.get('message', 'Unknown error')}"
+
+@mcp.tool()
+def add_variable_get_node_for_class(blueprint_path: str, variable_name: str,
+                                    owner_class_path: str, pos_x: float = 0,
+                                    pos_y: float = 0, graph_name: str = "") -> str:
+    """
+    Add a variable Get node for a variable owned by ANOTHER class.
+
+    Unlike add_variable_get_node (self-scoped only), this produces a node with a
+    target pin typed to owner_class_path, so you can read a member off another
+    object - e.g. read "MidAttack" off a component reference obtained via
+    get_component_by_class + add_cast_node.
+
+    Args:
+        variable_name: Variable on owner_class_path
+        owner_class_path: Declaring class (e.g. "/Game/BP/BPC_X.BPC_X_C")
+
+    Note: prefer an interface getter when one exists - it is the public API and
+    survives refactors of the underlying member.
+    Returns the node ID.
+    """
+    result = send_command("add_variable_get_node_for_class", {
+        "blueprint_path": blueprint_path,
+        "variable_name": variable_name,
+        "owner_class_path": owner_class_path,
+        "pos_x": pos_x,
+        "pos_y": pos_y,
+        "graph_name": graph_name,
+    })
+    if result.get("status") == "success":
+        return result.get("result", "")
+    return f"Error: {result.get('message', 'Unknown error')}"
+
+@mcp.tool()
+def add_function_override(blueprint_path: str, function_name: str) -> str:
+    """
+    Override a parent-class function or event - the equivalent of the editor's
+    My Blueprint > Override dropdown.
+
+    Two cases, handled automatically:
+    - Functions placeable as events (BlueprintImplementableEvent / native events)
+      get a K2Node_Event in the event graph. Returns the node ID.
+    - Everything else gets a new function graph carrying the parent's signature
+      (entry + result nodes with the right parameters). Returns the graph name,
+      which you then pass as graph_name to the add_*_node calls.
+
+    Use get_overridable_functions() to discover valid names. Returns empty/error
+    if the function is already overridden or not found on the parent class.
+    """
+    result = send_command("add_function_override", {
+        "blueprint_path": blueprint_path,
+        "function_name": function_name,
+    })
+    if result.get("status") == "success":
+        return result.get("result", "")
+    return f"Error: {result.get('message', 'Unknown error')}"
+
+@mcp.tool()
+def break_pin_links(blueprint_path: str, node_id: str, pin_name: str,
+                    graph_name: str = "", target_node_id: str = "",
+                    target_pin_name: str = "") -> str:
+    """
+    Break links on a pin.
+
+    With target_node_id/target_pin_name empty, breaks ALL links on the pin.
+    Otherwise breaks only the link to that specific pin.
+
+    Needed to rewire an existing graph - connect_pins() alone cannot splice a node
+    OUT of an exec chain. To remove node B from A -> B -> C: break_pin_links on
+    A."then", then connect_pins A."then" -> C."execute".
+    """
+    result = send_command("break_pin_links", {
+        "blueprint_path": blueprint_path,
+        "node_id": node_id,
+        "pin_name": pin_name,
+        "graph_name": graph_name,
+        "target_node_id": target_node_id,
+        "target_pin_name": target_pin_name,
+    })
+    if result.get("status") == "success":
+        return str(result.get("result", False))
+    return f"Error: {result.get('message', 'Unknown error')}"
+
+@mcp.tool()
+def remove_node(blueprint_path: str, node_id: str, graph_name: str = "") -> str:
+    """
+    Remove a node from a graph, breaking all of its links first.
+
+    Fails for nodes the user cannot delete (function entry/result nodes).
+    Pass graph_name to avoid deleting a same-named node in a different graph.
+    """
+    result = send_command("remove_node", {
+        "blueprint_path": blueprint_path,
+        "node_id": node_id,
+        "graph_name": graph_name,
+    })
+    if result.get("status") == "success":
+        return str(result.get("result", False))
+    return f"Error: {result.get('message', 'Unknown error')}"
+
+@mcp.tool()
+def reconstruct_node(blueprint_path: str, node_id: str, graph_name: str = "") -> str:
+    """
+    Reconstruct a node, refreshing its pins.
+
+    Required after set_pin_default_value() on a class pin of a node whose OUTPUT
+    type is driven by that pin (DeterminesOutputType - e.g. GetComponentByClass,
+    or Learning Agents' GetAgent). Until reconstructed the output pin keeps its
+    base type and connecting it to a typed pin fails, which looks like the class
+    pin "didn't take" when it actually did.
+    """
+    result = send_command("reconstruct_node", {
+        "blueprint_path": blueprint_path,
+        "node_id": node_id,
+        "graph_name": graph_name,
+    })
+    if result.get("status") == "success":
+        return str(result.get("result", False))
+    return f"Error: {result.get('message', 'Unknown error')}"
+
+@mcp.tool()
+def add_cast_node(blueprint_path: str, target_class_path: str,
+                  pos_x: float = 0, pos_y: float = 0, graph_name: str = "") -> str:
+    """
+    Add a dynamic Cast node that casts an object to target_class_path.
+
+    Args:
+        target_class_path: Class to cast to (e.g., "/Script/Engine.Actor",
+            "/Script/Engine.Pawn", or a BP class "/Game/BP/BP_NPC.BP_NPC_C")
+        graph_name: Function graph to add to (empty = the event graph)
+
+    The node is impure (has exec flow). Pins:
+    - execute / then (exec), CastFailed (exec output on failed cast)
+    - Object (input object to cast)
+    - "As<ClassName>" (output — the cast result, e.g., "AsActor", "AsBP_NPC_C")
+    Returns the node ID.
+    """
+    result = send_command("add_cast_node", {
+        "blueprint_path": blueprint_path,
+        "target_class_path": target_class_path,
+        "pos_x": pos_x, "pos_y": pos_y, "graph_name": graph_name,
     })
     if result.get("status") == "success":
         return result.get("result", "")
@@ -1057,7 +1279,7 @@ def add_custom_event_node(blueprint_path: str, event_name: str,
 
 @mcp.tool()
 def add_spawn_actor_node(blueprint_path: str, actor_class_path: str,
-                         pos_x: float = 0, pos_y: float = 0) -> str:
+                         pos_x: float = 0, pos_y: float = 0, graph_name: str = "") -> str:
     """
     Add a SpawnActor node (the canonical UK2Node_SpawnActorFromClass).
     This is the preferred way to spawn actors in Blueprints — produces a single
@@ -1081,7 +1303,7 @@ def add_spawn_actor_node(blueprint_path: str, actor_class_path: str,
     result = send_command("add_spawn_actor_node", {
         "blueprint_path": blueprint_path,
         "actor_class_path": actor_class_path,
-        "pos_x": pos_x, "pos_y": pos_y,
+        "pos_x": pos_x, "pos_y": pos_y, "graph_name": graph_name,
     })
     if result.get("status") == "success":
         return result.get("result", "")
@@ -1089,13 +1311,17 @@ def add_spawn_actor_node(blueprint_path: str, actor_class_path: str,
 
 @mcp.tool()
 def connect_pins(blueprint_path: str, source_node_id: str, source_pin: str,
-                 target_node_id: str, target_pin: str) -> str:
+                 target_node_id: str, target_pin: str, graph_name: str = "") -> str:
     """
     Connect two pins between nodes (exec or data).
 
     Pin name examples: "then" (event/call output exec), "execute" (call input exec),
     "ReturnValue" (call output data). Use get_pin_names()/get_pin_details() to find
     real names, since they're internal (not display) names.
+
+    graph_name scopes node lookup to that graph (empty = search all graphs). Pass the
+    function graph name when wiring inside a function so node-id collisions with the
+    event graph can't shadow the intended node.
 
     Returns "True" or "False".
     """
@@ -1104,23 +1330,26 @@ def connect_pins(blueprint_path: str, source_node_id: str, source_pin: str,
         "source_node_id": source_node_id,
         "source_pin": source_pin,
         "target_node_id": target_node_id,
-        "target_pin": target_pin,
+        "target_pin": target_pin, "graph_name": graph_name,
     })
     if result.get("status") == "success":
         return str(result.get("result", False))
     return f"Error: {result.get('message', 'Unknown error')}"
 
 @mcp.tool()
-def set_pin_default_value(blueprint_path: str, node_id: str, pin_name: str, value: str) -> str:
+def set_pin_default_value(blueprint_path: str, node_id: str, pin_name: str, value: str,
+                          graph_name: str = "") -> str:
     """
     Set the default value of an unconnected input pin.
     For object/class pins, pass the asset path (e.g., "/Game/BP/BP_NPC.BP_NPC_C").
     For value pins, pass the literal string ("true", "5", "1.5", "Hello", etc.).
+    graph_name scopes node lookup to that graph (empty = search all graphs).
     Returns "True" or "False".
     """
     result = send_command("set_pin_default_value", {
         "blueprint_path": blueprint_path,
         "node_id": node_id, "pin_name": pin_name, "value": value,
+        "graph_name": graph_name,
     })
     if result.get("status") == "success":
         return str(result.get("result", False))

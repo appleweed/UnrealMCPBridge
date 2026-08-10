@@ -77,7 +77,8 @@ public:
 		UClass* TargetClass,
 		const FString& FunctionName,
 		float PosX = 0.f,
-		float PosY = 0.f);
+		float PosY = 0.f,
+		const FString& GraphName = TEXT(""));
 
 	/** Add a variable Get node.
 	 * @param Blueprint Target Blueprint
@@ -91,7 +92,8 @@ public:
 		UBlueprint* Blueprint,
 		const FString& VariableName,
 		float PosX = 0.f,
-		float PosY = 0.f);
+		float PosY = 0.f,
+		const FString& GraphName = TEXT(""));
 
 	/** Add a variable Set node.
 	 * @param Blueprint Target Blueprint
@@ -105,7 +107,8 @@ public:
 		UBlueprint* Blueprint,
 		const FString& VariableName,
 		float PosX = 0.f,
-		float PosY = 0.f);
+		float PosY = 0.f,
+		const FString& GraphName = TEXT(""));
 
 	/** Add a Branch (if/else) node.
 	 * @param Blueprint Target Blueprint
@@ -117,7 +120,74 @@ public:
 	static FString AddBranchNode(
 		UBlueprint* Blueprint,
 		float PosX = 0.f,
-		float PosY = 0.f);
+		float PosY = 0.f,
+		const FString& GraphName = TEXT(""));
+
+	/** Add a Cast (dynamic cast) node to a target class.
+	 * The node is impure (has exec + Cast Failed pins). Input pin "Object",
+	 * output data pin "As<ClassName>", exec out "then" / "CastFailed".
+	 * @param Blueprint Target Blueprint
+	 * @param TargetClass Class to cast to (e.g., /Script/Engine.Actor or a BP class /Game/BP/BP_X.BP_X_C)
+	 * @param PosX Node X position in graph
+	 * @param PosY Node Y position in graph
+	 * @param GraphName Optional graph to add to (empty = event graph)
+	 * @return Node ID string, or empty on failure
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Blueprint Graph|Nodes")
+	static FString AddCastNode(
+		UBlueprint* Blueprint,
+		UClass* TargetClass,
+		float PosX = 0.f,
+		float PosY = 0.f,
+		const FString& GraphName = TEXT(""));
+
+	/** Add a Make Array node.
+	 * Input pins are named "[0]", "[1]", ... and the output pin is "Array".
+	 *
+	 * Pass ElementType to type the pins immediately. Leave it empty and the pins stay
+	 * wildcards until the first connection resolves them — and resolving the type
+	 * reconstructs the node, which DISCARDS any pin default values set beforehand.
+	 * So if you intend to set element defaults (rather than wire them), always pass
+	 * ElementType; otherwise the defaults silently vanish.
+	 *
+	 * @param Blueprint Target Blueprint
+	 * @param NumInputs Number of input pins to create (clamped to >= 1)
+	 * @param PosX Node X position in graph
+	 * @param PosY Node Y position in graph
+	 * @param GraphName Optional graph to add to (empty = event graph)
+	 * @param ElementType Optional element type ("name", "int", "float", "string",
+	 *        "bool", "Vector", a struct/class path, ...). Empty = wildcard.
+	 * @return Node ID string, or empty on failure
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Blueprint Graph|Nodes")
+	static FString AddMakeArrayNode(
+		UBlueprint* Blueprint,
+		int32 NumInputs = 1,
+		float PosX = 0.f,
+		float PosY = 0.f,
+		const FString& GraphName = TEXT(""),
+		const FString& ElementType = TEXT(""));
+
+	/** Add a variable Get node for a variable owned by ANOTHER class.
+	 * Unlike AddVariableGetNode (which is self-scoped), this produces a node with a
+	 * target pin typed to OwnerClass, so you can read a member off another object
+	 * (e.g. a component reference obtained from GetComponentByClass + a cast).
+	 * @param Blueprint Target Blueprint
+	 * @param VariableName Name of the variable on OwnerClass
+	 * @param OwnerClass Class that declares the variable
+	 * @param PosX Node X position in graph
+	 * @param PosY Node Y position in graph
+	 * @param GraphName Optional graph to add to (empty = event graph)
+	 * @return Node ID string, or empty on failure
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Blueprint Graph|Nodes")
+	static FString AddVariableGetNodeForClass(
+		UBlueprint* Blueprint,
+		const FString& VariableName,
+		UClass* OwnerClass,
+		float PosX = 0.f,
+		float PosY = 0.f,
+		const FString& GraphName = TEXT(""));
 
 	/** Add a Custom Event node.
 	 * @param Blueprint Target Blueprint
@@ -148,7 +218,8 @@ public:
 		UBlueprint* Blueprint,
 		UClass* ActorClass,
 		float PosX = 0.f,
-		float PosY = 0.f);
+		float PosY = 0.f,
+		const FString& GraphName = TEXT(""));
 
 	// =========================================================================
 	// PIN OPERATIONS
@@ -168,7 +239,8 @@ public:
 		const FString& SourceNodeId,
 		const FString& SourcePinName,
 		const FString& TargetNodeId,
-		const FString& TargetPinName);
+		const FString& TargetPinName,
+		const FString& GraphName = TEXT(""));
 
 	/** Set the default value of a pin.
 	 * @param Blueprint Target Blueprint
@@ -182,7 +254,56 @@ public:
 		UBlueprint* Blueprint,
 		const FString& NodeId,
 		const FString& PinName,
-		const FString& Value);
+		const FString& Value,
+		const FString& GraphName = TEXT(""));
+
+	/** Break links on a pin.
+	 * With TargetNodeId/TargetPinName empty, breaks ALL links on the pin.
+	 * Otherwise breaks only the link to that specific pin. Needed to splice a node
+	 * out of an exec chain (connect-only APIs cannot rewire).
+	 * @param Blueprint Target Blueprint
+	 * @param NodeId Node ID owning the pin
+	 * @param PinName Pin internal name
+	 * @param GraphName Optional graph scope (empty = search all graphs)
+	 * @param TargetNodeId Optional specific link target node
+	 * @param TargetPinName Optional specific link target pin
+	 * @return true if at least one link was broken
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Blueprint Graph|Pins")
+	static bool BreakPinLinks(
+		UBlueprint* Blueprint,
+		const FString& NodeId,
+		const FString& PinName,
+		const FString& GraphName = TEXT(""),
+		const FString& TargetNodeId = TEXT(""),
+		const FString& TargetPinName = TEXT(""));
+
+	/** Remove a node from a graph, breaking all of its links first.
+	 * @param Blueprint Target Blueprint
+	 * @param NodeId Node ID to remove
+	 * @param GraphName Optional graph scope (empty = search all graphs)
+	 * @return true if the node was found and removed
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Blueprint Graph|Nodes")
+	static bool RemoveNode(
+		UBlueprint* Blueprint,
+		const FString& NodeId,
+		const FString& GraphName = TEXT(""));
+
+	/** Reconstruct a node, refreshing its pins.
+	 * Required after setting a class pin on a node whose output type is driven by
+	 * that pin (DeterminesOutputType, e.g. GetComponentByClass / GetAgent) — until
+	 * reconstructed the output pin keeps its base type and typed connections fail.
+	 * @param Blueprint Target Blueprint
+	 * @param NodeId Node ID to reconstruct
+	 * @param GraphName Optional graph scope (empty = search all graphs)
+	 * @return true if the node was found and reconstructed
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Blueprint Graph|Nodes")
+	static bool ReconstructNode(
+		UBlueprint* Blueprint,
+		const FString& NodeId,
+		const FString& GraphName = TEXT(""));
 
 	// =========================================================================
 	// VARIABLES
@@ -219,6 +340,21 @@ public:
 		bool bIsInput = true,
 		const FString& DefaultValue = TEXT(""));
 
+	/** Create an override of a parent-class function or event.
+	 * Mirrors the editor's My Blueprint -> Override dropdown:
+	 *  - functions that can be placed as events (BlueprintImplementableEvent /
+	 *    BlueprintNativeEvent with no return) get a K2Node_Event in the event graph;
+	 *  - everything else gets a new function graph carrying the parent's signature.
+	 * @param Blueprint Target Blueprint
+	 * @param FunctionName Name of the parent function to override
+	 * @return Node ID of the created event node, or the graph name for function
+	 *         overrides. Empty on failure (already overridden / not found).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Blueprint Graph|Functions")
+	static FString AddFunctionOverride(
+		UBlueprint* Blueprint,
+		const FString& FunctionName);
+
 	/** Add a variable to a Blueprint.
 	 * @param Blueprint Target Blueprint
 	 * @param Name Variable name
@@ -248,12 +384,27 @@ public:
 	// INTROSPECTION
 	// =========================================================================
 
-	/** Get all node IDs in a Blueprint's event graph.
+	/** Get all node IDs in a graph.
+	 * NOTE: with GraphName empty this returns ONLY the event graph's nodes. A Blueprint
+	 * can have several ubergraph pages (e.g. an extra input-actions page) whose nodes
+	 * are invisible here — pass GraphName, or use GetGraphNames to enumerate first.
 	 * @param Blueprint Target Blueprint
+	 * @param GraphName Optional graph name (empty = event graph)
 	 * @return Array of node ID strings
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Blueprint Graph|Introspection")
-	static TArray<FString> GetNodeIds(UBlueprint* Blueprint);
+	static TArray<FString> GetNodeIds(
+		UBlueprint* Blueprint,
+		const FString& GraphName = TEXT(""));
+
+	/** Get every graph on a Blueprint, including extra ubergraph pages.
+	 * GetFunctionGraphNames lists only true functions, so additional ubergraph pages
+	 * are otherwise undiscoverable and searches silently return false negatives.
+	 * @param Blueprint Target Blueprint
+	 * @return Array of "GraphName|Type" where Type is "Ubergraph", "Function", or "Macro"
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Blueprint Graph|Introspection")
+	static TArray<FString> GetGraphNames(UBlueprint* Blueprint);
 
 	/** Get all pin names on a node.
 	 * @param Blueprint Target Blueprint
@@ -263,7 +414,8 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Blueprint Graph|Introspection")
 	static TArray<FString> GetPinNames(
 		UBlueprint* Blueprint,
-		const FString& NodeId);
+		const FString& NodeId,
+		const FString& GraphName = TEXT(""));
 
 	/** Get detailed pin info for a node.
 	 * @param Blueprint Target Blueprint
@@ -273,7 +425,8 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Blueprint Graph|Introspection")
 	static TArray<FString> GetPinDetails(
 		UBlueprint* Blueprint,
-		const FString& NodeId);
+		const FString& NodeId,
+		const FString& GraphName = TEXT(""));
 
 	/** Get the human-readable list-view title of a node.
 	 * @param Blueprint Target Blueprint
@@ -283,7 +436,8 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Blueprint Graph|Introspection")
 	static FString GetNodeTitle(
 		UBlueprint* Blueprint,
-		const FString& NodeId);
+		const FString& NodeId,
+		const FString& GraphName = TEXT(""));
 
 	/** Get the function called by a K2Node_CallFunction node.
 	 * @param Blueprint Target Blueprint
@@ -329,13 +483,18 @@ public:
 	 * @param Blueprint Target Blueprint
 	 * @param NodeId Node ID
 	 * @param PinName Pin internal name
+	 * @param GraphName Optional graph scope. Node IDs collide across a Blueprint's graphs
+	 *        (every function graph has a "K2Node_FunctionEntry_0"), so an unscoped read
+	 *        can silently return a different graph's node — always pass this when the
+	 *        Blueprint has more than one graph.
 	 * @return Array of "OtherNodeId.OtherPinName" strings (empty if pin is not connected)
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Blueprint Graph|Introspection")
 	static TArray<FString> GetPinConnections(
 		UBlueprint* Blueprint,
 		const FString& NodeId,
-		const FString& PinName);
+		const FString& PinName,
+		const FString& GraphName = TEXT(""));
 
 	/** Get the default literal value of an unconnected input pin.
 	 * @param Blueprint Target Blueprint
@@ -347,7 +506,8 @@ public:
 	static FString GetPinDefaultValue(
 		UBlueprint* Blueprint,
 		const FString& NodeId,
-		const FString& PinName);
+		const FString& PinName,
+		const FString& GraphName = TEXT(""));
 
 	/** Get the names of user-defined function graphs on a Blueprint.
 	 * @param Blueprint Target Blueprint
@@ -449,6 +609,10 @@ private:
 	static UEdGraph* FindGraphByName(UBlueprint* Blueprint, const FString& GraphName);
 	static UEdGraphNode* FindNodeById(UEdGraph* Graph, const FString& NodeId);
 	static UEdGraphNode* FindNodeByIdAcrossGraphs(UBlueprint* Blueprint, const FString& NodeId);
+	// Resolve a target graph: empty GraphName -> event graph, else the named graph.
+	static UEdGraph* ResolveGraph(UBlueprint* Blueprint, const FString& GraphName);
+	// Find a node: scoped to GraphName if given, else searched across all graphs.
+	static UEdGraphNode* FindNodeInGraphOrAcross(UBlueprint* Blueprint, const FString& GraphName, const FString& NodeId);
 	static bool TypeNameToPinType(const FString& TypeName, FEdGraphPinType& OutPinType);
 	static FString FormatPinType(const FEdGraphPinType& T);
 };
