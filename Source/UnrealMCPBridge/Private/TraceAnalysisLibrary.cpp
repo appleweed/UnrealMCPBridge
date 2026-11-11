@@ -17,7 +17,25 @@
 #include "TraceServices/Model/Frames.h"
 #include "TraceServices/Model/NetProfiler.h"
 
+#include "Misc/EngineVersionComparison.h"
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// UE 5.8 deprecated ITimingProfilerProvider::ReadTimers (callback) in favor of GetTimerReader()
+// (direct reference). Route every timer-reader access through here so one switch covers all versions.
+template <typename FuncType>
+static void WithTimerReader(const TraceServices::ITimingProfilerProvider& Provider, FuncType&& Func)
+{
+// UE_VERSION_NEWER_THAN_OR_EQUAL doesn't exist in 5.5; !OLDER_THAN is the portable ">=".
+#if !UE_VERSION_OLDER_THAN(5, 8, 0)
+	Func(Provider.GetTimerReader());
+#else
+	Provider.ReadTimers([&Func](const TraceServices::ITimingProfilerTimerReader& TimerReader)
+	{
+		Func(TimerReader);
+	});
+#endif
+}
 
 static TSharedPtr<const TraceServices::IAnalysisSession> RunAnalysis(
 	const FString& TracePath, FString& OutError)
@@ -168,7 +186,7 @@ FString UTraceAnalysisLibrary::AnalyzeTrace(const FString& TracePath, int32 TopN
 
 	// Cache timer info
 	TMap<uint32, const TraceServices::FTimingProfilerTimer*> TimerCache;
-	TimingProvider->ReadTimers([&TimerCache](const TraceServices::ITimingProfilerTimerReader& TimerReader)
+	WithTimerReader(*TimingProvider, [&TimerCache](const TraceServices::ITimingProfilerTimerReader& TimerReader)
 	{
 		uint32 Count = TimerReader.GetTimerCount();
 		for (uint32 i = 0; i < Count; i++)
@@ -351,7 +369,7 @@ FString UTraceAnalysisLibrary::GetTraceSpikes(const FString& TracePath, float Bu
 				FFrameScopeStats& Stats = FrameScopeMap.FindOrAdd(Event.TimerIndex);
 				if (Stats.Name == nullptr)
 				{
-					TimingProvider->ReadTimers([&](const TraceServices::ITimingProfilerTimerReader& TimerReader)
+					WithTimerReader(*TimingProvider, [&](const TraceServices::ITimingProfilerTimerReader& TimerReader)
 					{
 						const TraceServices::FTimingProfilerTimer* Timer = TimerReader.GetTimer(Event.TimerIndex);
 						if (Timer)

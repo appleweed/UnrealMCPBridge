@@ -8,6 +8,10 @@ This is a plugin for Unreal Engine (UE) that creates a server implementation of 
 - Intelligent and dynamic automation of such workflows.
 - General collaborative development with an agent.
 
+## Supported Engine Versions
+
+UnrealMCPBridge supports **Unreal Engine 5.5, 5.6, 5.7, and 5.8**. All tools in this guide are validated on each of those versions. Version-specific limitations are called out where they apply (for example, the UE 5.5 CSV profiler / Insights trace note under "CSV Profiler").
+
 ## Prerequisites
 
 - Python 3.10 or higher available on your system `PATH`, with the official [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) installed:
@@ -341,14 +345,14 @@ You can add your own prompts by following the pattern in the "Developing New Too
 
 ## C++ Libraries
 
-The plugin bundles six C++ `BlueprintFunctionLibrary` classes that auto-reflect to Python when the plugin is loaded. Most of `BlueprintGraphLibrary`, `TraceAnalysisLibrary`, and `PIEControlLibrary` is now exposed as dedicated MCP tools (see the tool tables above). The `execute_python` tool can also reach them directly via `import unreal`.
+The plugin bundles six C++ `BlueprintFunctionLibrary` classes that auto-reflect to Python when the plugin is loaded. All of `BlueprintGraphLibrary` and `PIEControlLibrary`, and most of `TraceAnalysisLibrary`, are exposed as dedicated MCP tools (see the tool tables above). The `execute_python` tool can also reach them directly via `import unreal`.
 
 | Library | Python Access | Purpose |
 |---------|--------------|---------|
-| `BlueprintGraphLibrary` | `unreal.BlueprintGraphLibrary` | Read and write Blueprint graphs: create BPs, add event/function/variable/branch/spawn-actor/macro nodes, wire pins, set defaults, author user function graphs with typed parameters, compile and save. Also full introspection — node titles, function/event/variable references, pin connections and defaults, function metadata, override-able parent functions, member variables, SCS components. **Most operations are exposed as dedicated MCP tools** under "Blueprint Graph Authoring". |
-| `NiagaraEditorLibrary` | `unreal.NiagaraEditorLibrary` | Create Niagara particle systems, add emitters and modules, set parameters, configure renderers (Sprite/Ribbon/Light/Mesh/Decal), compile. Used via `execute_python`. |
+| `BlueprintGraphLibrary` | `unreal.BlueprintGraphLibrary` | Read and write Blueprint graphs: create BPs, add event/custom-event/function-call/variable/branch/cast/make-array/spawn-actor nodes, override parent functions, wire and break pins, set defaults, remove and reconstruct nodes, author user function graphs with typed parameters, compile and save. Also full introspection — graph enumeration, node titles, function/event/variable/macro references, macro graph names, pin connections and defaults, function metadata, override-able parent functions, member variables, SCS components. Macros are read-only (no macro-instance node creation). **Every operation is exposed as a dedicated MCP tool** under "Blueprint Graph Authoring". |
+| `NiagaraEditorLibrary` | `unreal.NiagaraEditorLibrary` | Create and compile Niagara systems; add empty emitters or emitters from existing assets (e.g. NiagaraExamples); add modules; set float/int/bool/vector/Vector2/position/color parameters and static switch values; set float, color, and Vector2D curve keys; add and configure renderers (Sprite/Ribbon/Light/Mesh/Decal — material, alignment, facing, tessellation, radius/falloff, mesh); set emitter sim target (CPU/GPU) and fixed bounds. Introspection: emitter names/count, modules (with script names), module inputs and parameters, static switch values, renderer properties, rapid-iteration parameters, cached data interfaces. Pre-built emitters added from assets don't expose their stack through the normal handles — use `GetEmitterAssetModules` / `GetEmitterAssetRenderers` / `GetEmitterAssetRIParams`, which read a `UNiagaraEmitter` asset directly. Used via `execute_python`. |
 | `ViewportCaptureLibrary` | `unreal.ViewportCaptureLibrary` | Synchronous viewport screenshot capture via ReadPixels. Used internally by `take_screenshot`. |
-| `TraceAnalysisLibrary` | `unreal.TraceAnalysisLibrary` | Parse Unreal Insights `.utrace` files — timing scopes, frame stats, thread info, **and Net channel events** (per-connection bytes/packets, top objects/event types by replication bandwidth) via `INetProfilerProvider`. Used internally by `analyze_trace`, `get_trace_spikes`, `get_trace_frame_summary`, `get_trace_net_summary`. |
+| `TraceAnalysisLibrary` | `unreal.TraceAnalysisLibrary` | Parse Unreal Insights `.utrace` files — timing scopes, frame stats, thread info, **and Net channel events** (per-connection bytes/packets, top objects/event types by replication bandwidth) via `INetProfilerProvider`. Used internally by `analyze_trace`, `get_trace_spikes`, `get_trace_frame_summary`, `get_trace_net_summary`. `GetTraceThreads` (per-thread names/IDs in a trace) is not wrapped as a tool — call it via `execute_python` as `unreal.TraceAnalysisLibrary.get_trace_threads(path)`. |
 | `PIEControlLibrary` | `unreal.PIEControlLibrary` | Start, stop, and query Play-In-Editor sessions with optional multiplayer config. Wraps `ULevelEditorPlaySettings` + `LevelEditorSubsystem`. Exposed as `start_pie` / `stop_pie` / `is_pie_running` MCP tools. |
 | `UMGAuthoringLibrary` | `unreal.UMGAuthoringLibrary` | Author Widget Blueprints (UMG) from Python: construct widgets into the tree, set the root widget, toggle "Is Variable", and **headlessly** compile+save (`finalize_widget_blueprint`), instantiate a renderable widget (`create_widget_instance`), and delete assets (`delete_asset_headless`) with no modal dialogs. Fills the gaps `set_editor_property` can't reach (`UWidgetTree::RootWidget`, `UWidget::bIsVariable`) and provides a dialog-free batch-authoring path. Used via `execute_python` — see "Authoring Widget Blueprints (UMG)" below. |
 
